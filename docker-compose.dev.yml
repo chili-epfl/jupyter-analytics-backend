@@ -1,0 +1,73 @@
+services:
+  db:
+    image: postgres:16.1
+    container_name: db-container
+    environment:
+      - POSTGRES_USER=${RDS_USERNAME}
+      - POSTGRES_PASSWORD=${RDS_PASSWORD}
+      - POSTGRES_DB=${RDS_DB_NAME}
+    volumes:
+      - db-volume:/var/lib/postgresql/data
+    healthcheck:
+      # checking when the database is ready for the flask app to wait
+      test: ["CMD-SHELL", "pg_isready -U ${RDS_USERNAME} -d ${RDS_DB_NAME}"]
+      interval: 5s
+      timeout: 20s
+      retries: 5
+
+  redis:
+    image: redis:7.2.3
+    container_name: redis-container
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  flask:
+    build: ./flask
+    container_name: flask-container
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    command: gunicorn --access-logfile '-' --log-level 'debug' -k gevent -b 0.0.0.0:5000 -w 1 application
+    volumes:
+      - flask-volume:/app/S3
+      - ./flask/migrations:/app/migrations
+
+  flask_2:
+    build: ./flask
+    container_name: flask-container-2
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    command: gunicorn --access-logfile '-' --log-level 'debug' -k gevent -b 0.0.0.0:5000 -w 1 application
+    volumes:
+      - flask-volume:/app/S3
+      - ./flask/migrations:/app/migrations
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    ports:
+      - "1015:80"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - flask
+      - flask_2
+
+# to persist container volumes
+volumes:
+  db-volume:
+  flask-volume:

@@ -1,0 +1,64 @@
+name: Build and Push Flask Docker image to ECR
+
+on:
+  push:
+    branches:
+      - push-to-ecr
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1 # since ECR public is only available from us-east-1
+          role-to-assume: arn:aws:iam::097258850312:role/GitHubAction-AssumeRoleWithAction
+
+      - name: Login to Amazon ECR public
+        id: login-ecr-public
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
+      - name: Compute image tag from current date
+        id: date
+        run: echo "IMAGE_TAG=$(date +'%Y.%m.%d')" >> $GITHUB_ENV
+
+      - name: Build and push multi-platform Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./flask
+          file: ./flask/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.login-ecr-public.outputs.registry }}/f7y3w4q3/unianalytics-prod:${{ env.IMAGE_TAG }},
+            ${{ steps.login-ecr-public.outputs.registry }}/f7y3w4q3/unianalytics-prod:latest
+          platforms: linux/amd64,linux/arm64
+          provenance: false
+
+      - name: Substitute image tag in docker-compose.yml
+        run: |
+          sed -i "s/<IMAGE-TAG>/${{ env.IMAGE_TAG }}/g" ./flask/ebbundle/docker-compose.yml
+
+      - name: Create Elastic Beanstalk zip bundle
+        run: |
+          cd ./flask/ebbundle
+          zip -r /tmp/eb_bundle_unianalytics_prod_${{ env.IMAGE_TAG }}.zip .
+
+      - name: Upload zip to S3
+        run: |
+          aws s3 cp /tmp/eb_bundle_unianalytics_prod_${{ env.IMAGE_TAG }}.zip s3://unianalytics-iac/github-actions-bundles/

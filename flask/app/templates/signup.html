@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Unianalytics: Sign up</title>
+    <style>
+      body {
+        font-family: "Arial", sans-serif;
+        background-color: #f4f4f4;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+      }
+
+      form {
+        background-color: #fff;
+        padding: 20px;
+        border-radius: 5px;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      }
+
+      h1 {
+        text-align: center;
+        color: #333;
+      }
+
+      label {
+        color: #333;
+        font-weight: bold;
+      }
+
+      input[type="text"],
+      input[type="password"] {
+        width: 100%;
+        padding: 10px;
+        margin-top: 5px;
+        margin-bottom: 15px;
+        border: 1px solid #ddd;
+        border-radius: 5px;
+        box-sizing: border-box; /* Added to include padding in width */
+      }
+
+      button {
+        width: 100%;
+        padding: 10px;
+        background-color: #026ec1;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        cursor: pointer;
+        font-size: 16px;
+      }
+
+      button:hover {
+        background-color: #01508e;
+      }
+
+      #error-message {
+        color: #ca2008;
+        text-align: center;
+        margin-top: 10px;
+      }
+    </style>
+    <script>
+      function validateForm(event) {
+        event.preventDefault();
+
+        const username = document.getElementById("username").value;
+        const password = document.getElementById("password").value;
+        const confirmPassword =
+          document.getElementById("confirmPassword").value;
+        const errorMessage = document.getElementById("error-message");
+
+        if (!username || !password || !confirmPassword) {
+          errorMessage.textContent = "All fields are required.";
+          return false;
+        }
+
+        if (password !== confirmPassword) {
+          errorMessage.textContent = "Passwords do not match.";
+          return false;
+        }
+
+        // If validation passes, submit the form using fetch
+        fetch("/jwt/signup", {
+          method: "POST",
+          body: JSON.stringify({username, password}),
+          headers: {
+            "Content-Type": "application/json",
+          },
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            if (data.error) {
+              errorMessage.textContent = data.error;
+            } else {
+              errorMessage.textContent = data.message;
+              errorMessage.style.color = "green"; // Change color for success message
+            }
+          })
+          .catch((error) => {
+            errorMessage.textContent = "An error occurred during sign up.";
+            console.error("Sign up error:", error);
+          });
+      }
+    </script>
+  </head>
+  <body>
+    <form
+      id="signupForm"
+      action="/jwt/signup"
+      method="POST"
+      onsubmit="validateForm(event)"
+    >
+      <h1>Sign up for the Unianalytics dashboards</h1>
+      <label for="username">Username:</label><br />
+      <input type="text" id="username" name="username" required /><br />
+      <label for="password">Password:</label><br />
+      <input type="password" id="password" name="password" required /><br />
+      <label for="confirmPassword">Confirm Password:</label><br />
+      <input
+        type="password"
+        id="confirmPassword"
+        name="confirmPassword"
+        required
+      /><br /><br />
+      <button type="submit">Sign Up</button>
+      <p id="error-message"></p>
+    </form>
+  </body>
+</html>

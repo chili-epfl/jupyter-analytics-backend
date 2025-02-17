@@ -1,0 +1,1292 @@
+Parameters:
+  HostedZoneId:
+    Type: String
+    Description: (Optional) Provide the public hosted zone id (e.g. Z07838163QNBDELOHHKO5) of a registered domain you own to securely serve traffic over HTTPS. If you don't provide a hosted zone, it will be served over HTTP. Follow https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/domain-register.html to register a domain.
+
+  RedisInstanceType:
+    Description: EC2 instance type for the Redis cluster.
+    Type: String
+    Default: t4g.nano
+    AllowedValues:
+      - t4g.nano
+      - t4g.micro
+      - t4g.small
+      - t4g.medium
+      - t4g.large
+      - t4g.xlarge
+      - t4g.2xlarge
+
+  SSHKey:
+    Description: Name of the key pair to ssh into the EC2 instances.
+    Type: AWS::EC2::KeyPair::KeyName
+
+  EBInstanceType:
+    Description: EC2 instance type for the Elastic Beanstalk environment. Check for the Free Tier options available in your region (t2.micro or t3.micro).
+    Type: String
+    Default: t4g.micro
+    AllowedValues:
+      - t2.nano
+      - t2.micro
+      - t2.small
+      - t3.nano
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+      - t3.xlarge
+      - t3.2xlarge
+      - t4g.nano
+      - t4g.micro
+      - t4g.small
+      - t4g.medium
+      - t4g.large
+      - t4g.xlarge
+      - t4g.2xlarge
+
+  EBMinSize:
+    Description: Minimum number of EC2 instances for the Flask API.
+    Type: Number
+    Default: 1
+    # EBMinSize should be higher than 0
+    MinValue: 1
+    ConstraintDescription: EBMinSize must be at least 1.
+
+  EBMaxSize:
+    Description: Maximum number of EC2 instances for the Flask API.
+    Type: Number
+    Default: 2
+    # EBMaxSize should be greater than or equal to EBMinSize
+    MinValue: 1
+    ConstraintDescription: EBMaxSize must be greater than or equal to EBMinSize.
+
+  EBImageTag:
+    Type: String
+    Description: The tag of the Flask Docker image to use in the deployment (e.g. 2024.04.30, try to avoid using latest)
+    Default: 2024.04.30
+
+  DBInstanceType:
+    Description: RDS instance type for the RDS database.
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues:
+      - db.t4g.micro
+      - db.t4g.small
+      - db.t4g.medium
+      - db.t4g.large
+      - db.t4g.xlarge
+      - db.t4g.2xlarge
+
+Mappings:
+  InstanceTypeMemoryReservation:
+    # Defining soft memory limit for the ECS Task Definition. Leaving >100MiB for the Docker process and for some margin (between 3-18% of total available MEM)
+    t4g.nano:
+      MemoryReservation: 400 # total 512 MiB, 419 MiB actually available to ECS container
+    t4g.micro:
+      MemoryReservation: 900 # total 1024 MiB, 917 MiB actually available to ECS container
+    t4g.small:
+      MemoryReservation: 1800 # total 2048 MiB, 1847 MiB actually available to ECS container
+    t4g.medium:
+      MemoryReservation: 3750 # total 4096 MiB, 3836 MiB actually available to ECS container
+    t4g.large:
+      MemoryReservation: 7500 # total 8192 MiB, 7814 MiB actually available to ECS container
+    t4g.xlarge:
+      MemoryReservation: 15200 # total 16384 MiB, 15772 MiB actually available to ECS container
+    t4g.2xlarge:
+      MemoryReservation: 31000 # total 32768 MiB, 31685 MiB actually available to ECS container
+
+Conditions:
+  TlsEnabled: !Not [!Equals [!Ref HostedZoneId, ""]]
+
+Resources:
+  ### VPC and Subnets Definition with Nested Stack ###
+  VPCStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: https://unianalytics-iac.s3.eu-north-1.amazonaws.com/child-public-vpc-3-subnets.yml
+
+  # The VPC and subnets can be referenced with:
+  # PublicVPC: !GetAtt VPCStack.Outputs.PublicVPC
+  # PublicSubnet1: !GetAtt VPCStack.Outputs.PublicSubnet1
+  # PublicSubnet2: !GetAtt VPCStack.Outputs.PublicSubnet2
+  # PublicSubnet3: !GetAtt VPCStack.Outputs.PublicSubnet3
+
+  ### Shared Resources Definition ###
+  SharedRedisPrivateHostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Sub ${AWS::StackName}-redis-dns.internal
+      HostedZoneConfig:
+        Comment: "Private hosted zone to route traffic to Redis cluster instance"
+      VPCs:
+        - VPCId: !GetAtt VPCStack.Outputs.PublicVPC
+          VPCRegion: !Ref AWS::Region
+
+  SharedRedisInstanceDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref SharedRedisPrivateHostedZone
+      Name: !Sub "api.${AWS::StackName}-redis-dns.internal"
+      Type: A
+      TTL: "20"
+      ResourceRecords:
+        - 172.31.255.0 # provide an IP that's part of the VPC but unused (not part of any subnets)
+
+  SharedDNSRecordLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaRoute53UpdatePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - route53:ChangeResourceRecordSets
+                  - route53:ListResourceRecordSets
+                Resource: !Sub "arn:aws:route53:::hostedzone/${SharedRedisPrivateHostedZone}"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  SharedDNSRecordLambdaUpdate:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt SharedDNSRecordLambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          HOSTED_ZONE_ID: !Ref SharedRedisPrivateHostedZone
+          DNS_RECORD_NAME: !Ref SharedRedisInstanceDnsRecord
+      Runtime: python3.11
+      Timeout: 10
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+
+          def lambda_handler(event, context):
+              client = boto3.client('route53')
+
+              response = client.change_resource_record_sets(
+                  HostedZoneId=os.environ.get('HOSTED_ZONE_ID'),
+                  ChangeBatch={
+                      'Changes': [
+                          {
+                              'Action': 'UPSERT',
+                              'ResourceRecordSet': {
+                                  'Name': os.environ.get('DNS_RECORD_NAME'),
+                                  'Type': 'A',
+                                  'TTL': 20,
+                                  'ResourceRecords': [
+                                      {
+                                          'Value': event['IpAddress']
+                                      }
+                                  ]
+                              }
+                          }
+                      ]
+                  }
+              )
+              
+              response['ChangeInfo']['SubmittedAt'] = response['ChangeInfo']['SubmittedAt'].isoformat()
+
+              return json.dumps(response)
+
+  SharedDNSRecordLambdaDelete: # delete the record created with Lambda in the private hosted zone upon stack DELETE
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt SharedDNSRecordLambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          HOSTED_ZONE_ID: !Ref SharedRedisPrivateHostedZone
+          DNS_RECORD_NAME: !Ref SharedRedisInstanceDnsRecord
+      Runtime: python3.11
+      Timeout: 10
+      Code:
+        ZipFile: |
+          import boto3
+          import os
+          import json
+          import cfnresponse
+
+          def lambda_handler(event, context):
+
+              response = { 'ChangeInfo': { 'Comment': 'Not a DELETE stack event' } }
+              if event['RequestType'] == 'Delete':
+
+                  client = boto3.client('route53')
+                  dns_record_name = os.environ.get('DNS_RECORD_NAME')
+
+                  # retrieve the current record value necessary for deletion
+                  response_record_sets = client.list_resource_record_sets(
+                      HostedZoneId=os.environ.get('HOSTED_ZONE_ID'),
+                      StartRecordName=dns_record_name,
+                      StartRecordType='A',
+                      MaxItems='1'
+                  )
+
+                  current_value = None
+                  if 'ResourceRecordSets' in response_record_sets:
+
+                      record_set = response_record_sets['ResourceRecordSets'][0]
+
+                      # add '.' to dns_record_name for trailing '.' in RecordSet.Name
+                      if record_set['Name'] == f"{dns_record_name}." and record_set['Type'] == 'A':
+                          current_value = record_set['ResourceRecords'][0]['Value']
+
+                  # if a value has been found for the record
+                  if current_value: 
+                    response = client.change_resource_record_sets(
+                        HostedZoneId=os.environ.get('HOSTED_ZONE_ID'),
+                        ChangeBatch={
+                            'Changes': [
+                                {
+                                    'Action': 'DELETE',
+                                    'ResourceRecordSet': {
+                                        'Name': dns_record_name,
+                                        'Type': 'A',
+                                        'TTL': 20,
+                                        'ResourceRecords': [
+                                            {
+                                                'Value': current_value
+                                            }
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    )
+              
+                    response['ChangeInfo']['SubmittedAt'] = response['ChangeInfo']['SubmittedAt'].isoformat()
+
+              response['event'] = json.dumps(event)
+
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, response)
+              return response
+
+  SharedOnStackDeletion: # call the Lambda to delete the record in the private hosted zone to avoid failure of stack deletion
+    Type: Custom::CleanUpPrivateZoneRecordLambda
+    Properties:
+      ServiceToken: !GetAtt SharedDNSRecordLambdaDelete.Arn
+
+  ### ACM Certificate for HTTPS Definition ###
+  EBHostedZoneNameLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Condition: TlsEnabled
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaHostedZoneNamePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "route53:GetHostedZone"
+                Resource: "arn:aws:route53:::hostedzone/*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  EBHostedZoneNameLambda:
+    Type: AWS::Lambda::Function
+    Condition: TlsEnabled
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt EBHostedZoneNameLambdaExecutionRole.Arn
+      Runtime: python3.11
+      Timeout: 10
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          def lambda_handler(event, context):
+              client = boto3.client('route53')
+              hosted_zone_id = event['ResourceProperties']['HostedZoneId']
+
+              try:
+                  response = client.get_hosted_zone(Id=hosted_zone_id)
+                  hosted_zone_name = response['HostedZone']['Name']
+                  # remove the trailing dot
+                  hosted_zone_name = hosted_zone_name.rstrip(".")
+
+                  responseData = {'HostedZoneName': hosted_zone_name}
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, physicalResourceId=hosted_zone_id)
+              except Exception as e:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Message': str(e)})
+
+  EBHostedZoneLambdaTrigger:
+    Type: Custom::EBHostedZoneLambdaTrigger
+    Condition: TlsEnabled
+    Properties:
+      ServiceToken: !GetAtt EBHostedZoneNameLambda.Arn
+      HostedZoneId: !Ref HostedZoneId
+
+  EBACMCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: TlsEnabled
+    Properties:
+      DomainName:
+        !Join [
+          "",
+          [
+            "api-unianalytics-elb.",
+            !GetAtt EBHostedZoneLambdaTrigger.HostedZoneName,
+          ],
+        ]
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName:
+            !Join [
+              "",
+              [
+                "api-unianalytics-elb.",
+                !GetAtt EBHostedZoneLambdaTrigger.HostedZoneName,
+              ],
+            ]
+          HostedZoneId: !Ref HostedZoneId
+
+  ### Security Groups and Secrets Definition ###
+  EBSecretsGenerationLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+  EBSecretsGenerationLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt EBSecretsGenerationLambdaExecutionRole.Arn
+      Runtime: python3.11
+      Timeout: 10
+      Code:
+        ZipFile: |
+          import secrets
+          import cfnresponse
+
+          def lambda_handler(event, context):
+
+              if event['RequestType'] == 'Create':
+                  rds_password = secrets.token_hex(32)
+                  secret_salt = secrets.token_hex(32)
+                  secret_key = secrets.token_hex(32)
+                  jwt_secret_key = secrets.token_hex(32)
+
+                  response = {
+                    'Message': 'Random strings created',
+                    'RDSPassword': rds_password,
+                    'SecretSalt': secret_salt,
+                    'SecretKey': secret_key,
+                    'JWTSecretKey': jwt_secret_key
+                  }
+              else:
+                  response = {
+                    'Message': 'Not a create stack event'
+                  }
+
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, response)
+              return response
+
+  EBSecretsGenerationLambdaTrigger:
+    Type: Custom::EBSecretsGenerationLambdaTrigger
+    Properties:
+      ServiceToken: !GetAtt EBSecretsGenerationLambdaFunction.Arn
+
+  EBSecurityGroup: # EB Security Group added in addition to the default EB SG to enable ssh
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for all ElasticBeanstalk Environments
+      GroupName: !Sub ${AWS::StackName}-AWSEBCustomSecurityGroup
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      VpcId: !GetAtt VPCStack.Outputs.PublicVPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-env
+
+  EBSecurityGroupIngress: # to create an inbound rule from ECS to EB on port 6379 without creating a circular dependency
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref EBSecurityGroup
+      FromPort: 6379
+      ToPort: 6379
+      IpProtocol: tcp
+      SourceSecurityGroupId: !Ref ECSSecurityGroup
+
+  EBELBv2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security Group for the Elastic Beanstalk Load Balancer
+      GroupName: !Sub ${AWS::StackName}-AWSEBLoadBalancerCustomSecurityGroup
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      VpcId: !GetAtt VPCStack.Outputs.PublicVPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-env
+
+  # only enable 443 if TLS is requested
+  EBELBv2SecurityGroupIngress443:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: TlsEnabled
+    Properties:
+      GroupId: !Ref EBELBv2SecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      CidrIp: 0.0.0.0/0
+
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SG for ECS cluster
+      GroupName: !Sub ${AWS::StackName}-ECSSecurityGroup
+      SecurityGroupIngress:
+        - FromPort: 22
+          ToPort: 22
+          IpProtocol: tcp
+          CidrIp: 0.0.0.0/0
+        - FromPort: 6379
+          ToPort: 6379
+          IpProtocol: tcp
+          SourceSecurityGroupId: !Ref EBSecurityGroup
+      VpcId: !GetAtt VPCStack.Outputs.PublicVPC
+      Tags:
+        - Key: Name
+          Value: !Join [_, [!Ref "AWS::StackName"]]
+
+  ### ECS Resources Definition ###
+  ECSInstanceProfileRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ECSLambdaInvokePolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !GetAtt SharedDNSRecordLambdaUpdate.Arn
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  ECSInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref ECSInstanceProfileRole
+
+  ECSLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    DependsOn: ECSCluster
+    Properties:
+      LaunchTemplateData:
+        ImageId: "{{resolve:ssm:/aws/service/ecs/optimized-ami/amazon-linux-2023/arm64/al2023-ami-ecs-hvm-2023.0.20240409-kernel-6.1-arm64/image_id}}"
+        SecurityGroupIds:
+          - !GetAtt ECSSecurityGroup.GroupId
+        InstanceType: !Ref RedisInstanceType
+        KeyName: !Ref SSHKey
+        IamInstanceProfile:
+          Arn: !GetAtt ECSInstanceProfile.Arn
+        UserData: !Base64
+          "Fn::Sub":
+            - |-
+              #!/bin/bash
+              echo ECS_CLUSTER=${ClusterName} >> /etc/ecs/ecs.config;
+
+              # retrieve the private IPv4 address of the instance using ec2-metadata available on Amazon Linux AMI
+              INSTANCE_PRIVATE_IP_ADDRESS=$(ec2-metadata -o --quiet)
+
+              # format the payload string with proper quoting
+              PAYLOAD="{\"IpAddress\": \"$INSTANCE_PRIVATE_IP_ADDRESS\"}"
+
+              # call Lambda function to change the DNS record with private IPv4 address of the new instance
+              aws lambda invoke --function-name ${SharedDNSRecordLambdaUpdateArn} --payload "$PAYLOAD" --cli-binary-format raw-in-base64-out /tmp/lambda-update-dns-output.json
+            - ClusterName: !Sub ${AWS::StackName}-ECSCluster
+              SharedDNSRecordLambdaUpdateArn: !GetAtt SharedDNSRecordLambdaUpdate.Arn
+
+  ECSAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: ECSCluster
+    Properties:
+      MinSize: "1"
+      MaxSize: "1"
+      DesiredCapacity: "1"
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ECSLaunchTemplate
+        Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier:
+        - !GetAtt VPCStack.Outputs.PublicSubnet1
+        - !GetAtt VPCStack.Outputs.PublicSubnet2
+        - !GetAtt VPCStack.Outputs.PublicSubnet3
+      Tags:
+        - Key: Name
+          PropagateAtLaunch: true
+          Value: !Join
+            - " - "
+            - - ECS Instance
+              - !Sub ${AWS::StackName}-ECSCluster
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${AWS::StackName}-ECSCluster
+      ClusterSettings:
+        - Name: containerInsights
+          Value: disabled
+      Configuration:
+        ExecuteCommandConfiguration:
+          Logging: DEFAULT
+      ServiceConnectDefaults:
+        Namespace: !Sub ${AWS::StackName}-ECSCluster
+      Tags: []
+
+  ECSCapacityProvider:
+    Type: AWS::ECS::CapacityProvider
+    Properties:
+      AutoScalingGroupProvider:
+        AutoScalingGroupArn: !Ref ECSAutoScalingGroup
+        ManagedScaling:
+          Status: ENABLED
+          TargetCapacity: 100
+        ManagedTerminationProtection: DISABLED
+
+  ECSClusterCPAssociation:
+    Type: AWS::ECS::ClusterCapacityProviderAssociations
+    DependsOn: ECSCluster
+    Properties:
+      Cluster: !Sub ${AWS::StackName}-ECSCluster
+      CapacityProviders:
+        - !Ref ECSCapacityProvider
+      DefaultCapacityProviderStrategy:
+        - Base: 0
+          Weight: 1
+          CapacityProvider: !Ref ECSCapacityProvider
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  ECSCloudWatchLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub ${AWS::StackName}-ECSRedisTaskGroup
+
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AWS::StackName}-ECSRedisTask
+      ContainerDefinitions:
+        - Name: redis
+          Image: redis:7.2.3
+          Cpu: 0
+          MemoryReservation: !FindInMap [
+              InstanceTypeMemoryReservation,
+              !Ref RedisInstanceType,
+              MemoryReservation,
+            ] # dynamic memory reservation mapped from RedisInstanceType
+          PortMappings:
+            - Name: redis-80-tcp
+              ContainerPort: 80
+              HostPort: 0
+              Protocol: tcp
+              AppProtocol: http
+            - Name: redis-6379-tcp
+              ContainerPort: 6379
+              HostPort: 6379
+              Protocol: tcp
+          Essential: true
+          Environment: []
+          EnvironmentFiles: []
+          MountPoints: []
+          VolumesFrom: []
+          Ulimits: []
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-create-group: true
+              awslogs-group: !Ref ECSCloudWatchLogsGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: ecs
+            SecretOptions: []
+          HealthCheck:
+            Command:
+              - "CMD-SHELL"
+              - "redis-cli --raw incr ping"
+            Interval: 5
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 15
+      ExecutionRoleArn: !GetAtt ECSTaskExecutionRole.Arn
+      RequiresCompatibilities:
+        - EC2
+      RuntimePlatform:
+        CpuArchitecture: ARM64
+        OperatingSystemFamily: LINUX
+
+  ECSService:
+    Type: AWS::ECS::Service
+    # wait for the EC2 instances to be provisioned to avoid health failures at the start
+    DependsOn: ECSAutoScalingGroup
+    Properties:
+      Cluster: !Ref ECSCluster
+      DeploymentConfiguration:
+        MaximumPercent: 100
+        MinimumHealthyPercent: 0
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      DeploymentController:
+        Type: ECS
+      DesiredCount: 1
+      EnableECSManagedTags: true
+      PlacementConstraints: []
+      PlacementStrategies:
+        - Field: attribute:ecs.availability-zone
+          Type: spread
+        - Field: instanceId
+          Type: spread
+      SchedulingStrategy: REPLICA
+      ServiceName: !Sub ${AWS::StackName}-ECSService
+      ServiceConnectConfiguration:
+        Enabled: false
+      Tags: []
+      TaskDefinition: !Ref ECSTaskDefinition
+
+  ### Elastic Beanstalk Environment Definition ###
+  EBInstanceProfileRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSElasticBeanstalkWebTier
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  EBInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EBInstanceProfileRole
+
+  # define S3 bucket to store/retrieve notebooks and application bundle
+  EBS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # generate an almost random bucket name from the region and the stack id
+      BucketName:
+        !Join [
+          "-",
+          [
+            "unianalytics-eb",
+            !Sub "${AWS::Region}",
+            !Select [
+              4,
+              !Split ["-", !Select [2, !Split ["/", !Ref AWS::StackId]]],
+            ],
+          ],
+        ]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerPreferred
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-S3bucket"
+
+  EBS3BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref EBS3Bucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Sid: AllowAccessandPut
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt EBInstanceProfileRole.Arn
+            Action:
+              - s3:PutObject
+              - s3:PutObjectAcl
+              - s3:ListBucket
+              - s3:GetObject
+            Resource:
+              - !Sub "arn:aws:s3:::${EBS3Bucket}"
+              - !Sub "arn:aws:s3:::${EBS3Bucket}/*"
+          - Sid: AllowLambdaAccess
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt EBEmptyS3BucketLambdaExecutionRole.Arn
+            Action:
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${EBS3Bucket}"
+          - Sid: AllowLambdaEmpty
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt EBEmptyS3BucketLambdaExecutionRole.Arn
+            Action:
+              - s3:DeleteObject
+            Resource: !Sub "arn:aws:s3:::${EBS3Bucket}/*"
+          - Sid: DenyDeleteBucket
+            Effect: Deny
+            Principal:
+              AWS: "*"
+            Action: s3:DeleteBucket
+            Resource: !Sub "arn:aws:s3:::${EBS3Bucket}"
+
+  EBEmptyS3BucketLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaEmptyS3BucketPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${EBS3Bucket}"
+              - Effect: Allow
+                Action:
+                  - s3:DeleteObject
+                Resource: !Sub "arn:aws:s3:::${EBS3Bucket}/*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  EBEmptyS3BucketLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt EBEmptyS3BucketLambdaExecutionRole.Arn
+      Runtime: python3.11
+      Timeout: 10
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          def lambda_handler(event, context):
+              if event['RequestType'] == 'Delete':
+                  s3 = boto3.client('s3')
+                  try:
+                      bucket = event['ResourceProperties']['BucketName']
+                      response = s3.list_objects_v2(Bucket=bucket)
+                      while 'Contents' in response:
+                          s3.delete_objects(Bucket=bucket, Delete={'Objects': [{'Key': obj['Key']} for obj in response['Contents']]})
+                          response = s3.list_objects_v2(Bucket=bucket)
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  except Exception as e:
+                      print(e)
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {})
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+
+  EBEmptyS3BucketTrigger:
+    Type: Custom::EBEmptyS3BucketTrigger
+    Properties:
+      ServiceToken: !GetAtt EBEmptyS3BucketLambda.Arn
+      BucketName: !Ref EBS3Bucket
+
+  EBS3CopyBundleLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3ObjectCopyPermissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:PutObjectAcl
+                  - s3:ListBucket
+                  - s3:GetObject
+                Resource:
+                  - !Sub "arn:aws:s3:::${EBS3Bucket}"
+                  - !Sub "arn:aws:s3:::${EBS3Bucket}/*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # function that copies the application zip bundle into a bucket in the same region as the stack is being deployed as this is required by EB
+  EBS3CopyBundleLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt EBS3CopyBundleLambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          IMAGE_TAG: !Ref EBImageTag
+      Runtime: python3.11
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import boto3
+          from urllib.request import urlopen
+          import cfnresponse
+          import os
+
+          def lambda_handler(event, context):
+              # Initialize the response data dictionary
+              response_data = {}
+
+              if event['RequestType'] == 'Create':
+                  image_tag = os.environ.get('IMAGE_TAG', '')
+                  source_url = f"https://unianalytics-iac.s3.eu-north-1.amazonaws.com/github-actions-bundles/eb_bundle_unianalytics_prod_{image_tag}.zip"
+                  destination_bucket = event['ResourceProperties']['BucketName']
+                  destination_key = 'elastic-beanstalk-application-bundle/start-bundle.zip'
+                  
+                  try:
+                      # Download the file from the URL
+                      with urlopen(source_url) as response:
+                          file_data = response.read()
+
+                      # Upload the file to the destination bucket
+                      s3 = boto3.client('s3')
+                      s3.put_object(Bucket=destination_bucket, Key=destination_key, Body=file_data)
+
+                      # Send success response to CloudFormation
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+                  
+                  except Exception as e:
+                      print(f"Error processing request: {e}")
+                      # Send failure response to CloudFormation
+                      cfnresponse.send(event, context, cfnresponse.FAILED, response_data)
+              else:
+                  # For other request types like Update or Delete, send success response
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, response_data)
+
+  EBS3CopyBundleTrigger:
+    Type: Custom::EBS3CopyBundleTrigger
+    Properties:
+      ServiceToken: !GetAtt EBS3CopyBundleLambda.Arn
+      BucketName: !Ref EBS3Bucket
+
+  EBApplication:
+    Type: AWS::ElasticBeanstalk::Application
+    Properties:
+      ApplicationName: !Sub ${AWS::StackName}-app
+
+  # pull app code from ECR Docker image by reading the zipped bundle copied into EBS3Bucket
+  EBApplicationVersion:
+    Type: AWS::ElasticBeanstalk::ApplicationVersion
+    DependsOn: EBS3CopyBundleTrigger
+    Properties:
+      ApplicationName: !Ref EBApplication
+      Description: Pulling Docker image from ECR
+      SourceBundle:
+        S3Bucket: !Ref EBS3Bucket
+        S3Key: elastic-beanstalk-application-bundle/start-bundle.zip
+
+  EBConfigurationTemplate:
+    Type: AWS::ElasticBeanstalk::ConfigurationTemplate
+    Properties:
+      ApplicationName: !Ref EBApplication
+      OptionSettings:
+        - Namespace: aws:autoscaling:asg
+          OptionName: MinSize
+          Value: !Ref EBMinSize
+        - Namespace: aws:autoscaling:asg
+          OptionName: MaxSize
+          Value: !Ref EBMaxSize
+
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: IamInstanceProfile
+          Value: !Ref EBInstanceProfile
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: EC2KeyName
+          Value: analytics-nopass
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: SecurityGroups
+          Value: !Ref EBSecurityGroup
+        - Namespace: aws:autoscaling:launchconfiguration
+          OptionName: EC2KeyName
+          Value: !Ref SSHKey
+
+        # by default, the ASG scales +1 vs -1 based on >6Mb/s vs <3Mb/s of NetworkOut over 5min
+        - Namespace: aws:autoscaling:trigger
+          OptionName: BreachDuration
+          Value: 2 # default is 5min
+        - Namespace: aws:autoscaling:trigger
+          OptionName: Period
+          Value: 1 # default is 5min
+        - Namespace: aws:autoscaling:trigger
+          OptionName: EvaluationPeriods
+          Value: 2 # default is 1
+
+        # +1/-1 scaling based on >60%/<30% CPUUtilization
+        # - Namespace: aws:autoscaling:trigger
+        #   OptionName: MeasureName
+        #   Value: CPUUtilization
+        # - Namespace: aws:autoscaling:trigger
+        #   OptionName: UpperThreshold
+        #   Value: 60
+        # - Namespace: aws:autoscaling:trigger
+        #   OptionName: LowerThreshold
+        #   Value: 30
+        # - Namespace: aws:autoscaling:trigger
+        #   OptionName: Unit
+        #   Value: Percent
+        # - Namespace: aws:autoscaling:trigger
+        #   OptionName: LowerBreachScaleIncrement
+        #   Value: -1
+        # - Namespace: aws:autoscaling:trigger
+        #   OptionName: UpperBreachScaleIncrement
+        #   Value: 1
+
+        - Namespace: aws:autoscaling:updatepolicy:rollingupdate
+          OptionName: RollingUpdateEnabled
+          Value: true
+        - Namespace: aws:autoscaling:updatepolicy:rollingupdate
+          OptionName: RollingUpdateType
+          Value: Health
+
+        - Namespace: aws:elasticbeanstalk:command
+          OptionName: DeploymentPolicy
+          Value: Rolling
+
+        - Namespace: aws:elasticbeanstalk:healthreporting:system
+          OptionName: SystemType
+          Value: enhanced
+        - Namespace: aws:elasticbeanstalk:healthreporting:system # disable considering application 4xx as unhealthy
+          OptionName: ConfigDocument
+          Value: |
+            {
+              "Rules":
+                {
+                  "Environment":
+                    {
+                      "Application":
+                        { "ApplicationRequests4xx": { "Enabled": false } },
+                      "ELB": { "ELBRequests4xx": { "Enabled": true } },
+                    },
+                },
+              "Version": 1,
+            }
+
+        - Namespace: aws:ec2:instances
+          OptionName: InstanceTypes
+          Value: !Join [",", [!Ref EBInstanceType]]
+
+        - Namespace: aws:ec2:vpc
+          OptionName: VPCId
+          Value: !GetAtt VPCStack.Outputs.PublicVPC
+        - Namespace: aws:ec2:vpc
+          OptionName: Subnets
+          Value:
+            !Join [
+              ",",
+              [
+                !GetAtt VPCStack.Outputs.PublicSubnet1,
+                !GetAtt VPCStack.Outputs.PublicSubnet2,
+                !GetAtt VPCStack.Outputs.PublicSubnet3,
+              ],
+            ]
+        - Namespace: aws:ec2:vpc
+          OptionName: ELBSubnets
+          Value:
+            !Join [
+              ",",
+              [
+                !GetAtt VPCStack.Outputs.PublicSubnet1,
+                !GetAtt VPCStack.Outputs.PublicSubnet2,
+                !GetAtt VPCStack.Outputs.PublicSubnet3,
+              ],
+            ]
+        - Namespace: aws:ec2:vpc
+          OptionName: ELBScheme
+          Value: public
+        - Namespace: aws:ec2:vpc
+          OptionName: AssociatePublicIpAddress
+          Value: true
+
+        - Namespace: aws:elasticbeanstalk:application
+          OptionName: Application Healthcheck URL
+          Value: /
+
+        # Pass the Redis DNS name as environment variable
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: REDIS_MESSAGE_QUEUE_URL # name of the environment variable
+          Value: !Sub "redis://${SharedRedisInstanceDnsRecord}"
+
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: SECRET_SALT
+          Value: !GetAtt EBSecretsGenerationLambdaTrigger.SecretSalt
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: SECRET_KEY
+          Value: !GetAtt EBSecretsGenerationLambdaTrigger.SecretKey
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: JWT_SECRET_KEY
+          Value: !GetAtt EBSecretsGenerationLambdaTrigger.JWTSecretKey
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: S3_BUCKET_NAME
+          Value: !Ref EBS3Bucket
+        - Namespace: aws:elasticbeanstalk:application:environment
+          OptionName: S3_PATH_NOTEBOOKS
+          Value: "notebooks/"
+
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: EnvironmentType
+          Value: LoadBalanced
+        - Namespace: aws:elasticbeanstalk:environment
+          OptionName: LoadBalancerType
+          Value: application
+
+        # only add the HTTPS listener if TLS is requested
+        - Namespace: aws:elbv2:listener:443
+          OptionName: ListenerEnabled
+          Value: !If [TlsEnabled, true, false]
+
+        - Namespace: aws:elbv2:listener:443
+          OptionName: Protocol
+          Value: HTTPS
+
+        - Namespace: aws:elbv2:listener:443
+          OptionName: SSLCertificateArns
+          Value: !If [TlsEnabled, !Ref EBACMCertificate, !Ref "AWS::NoValue"]
+
+        # remove the 80 listener if TLS is enabled since it is already defined in a Resource in this template
+        - Namespace: aws:elbv2:listener:80
+          OptionName: ListenerEnabled
+          Value: !If [TlsEnabled, false, true]
+
+        # replace the SG created by default with the SG created above
+        - Namespace: aws:elbv2:loadbalancer
+          OptionName: SecurityGroups
+          Value: !GetAtt EBELBv2SecurityGroup.GroupId
+        - Namespace: aws:elbv2:loadbalancer
+          OptionName: ManagedSecurityGroup
+          Value: !GetAtt EBELBv2SecurityGroup.GroupId
+
+        # DB initialization
+        - Namespace: aws:rds:dbinstance
+          OptionName: DBAllocatedStorage
+          Value: 20
+        - Namespace: aws:rds:dbinstance
+          OptionName: DBEngine
+          Value: postgres
+        - Namespace: aws:rds:dbinstance
+          OptionName: DBInstanceClass
+          Value: !Ref DBInstanceType
+        - Namespace: aws:rds:dbinstance
+          OptionName: DBPassword
+          Value: !GetAtt EBSecretsGenerationLambdaTrigger.RDSPassword
+        - Namespace: aws:rds:dbinstance
+          OptionName: DBUser
+          Value: mainUser
+        # to create the DB with elastic beanstalk environment
+        - Namespace: aws:rds:dbinstance
+          OptionName: HasCoupledDatabase
+          Value: true
+
+      # using the Docker platform
+      SolutionStackName: 64bit Amazon Linux 2023 v4.3.1 running Docker
+
+  EBEnvironment:
+    Type: AWS::ElasticBeanstalk::Environment
+    DependsOn: ECSService
+    Properties:
+      ApplicationName: !Ref EBApplication
+      EnvironmentName: !Sub ${AWS::StackName}-env
+      TemplateName: !Ref EBConfigurationTemplate
+      VersionLabel: !Ref EBApplicationVersion
+
+  EBLoadBalancerInfoLambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Condition: TlsEnabled
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaELBDescriptionPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "elasticbeanstalk:DescribeEnvironmentResources"
+                  - "autoscaling:DescribeAutoScalingGroups"
+                  - "elasticloadbalancing:DescribeLoadBalancers"
+                  - "cloudformation:DescribeStacks"
+                Resource: "*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  EBLoadBalancerInfoLambda:
+    Type: AWS::Lambda::Function
+    Condition: TlsEnabled
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt EBLoadBalancerInfoLambdaExecutionRole.Arn
+      Runtime: python3.11
+      Timeout: 10
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          def lambda_handler(event, context):
+              try:
+                  eb_client = boto3.client('elasticbeanstalk')
+                  elb_client = boto3.client('elbv2')
+
+                  # get details of the Elastic Beanstalk environment
+                  env_name = event['ResourceProperties']['EnvironmentName']
+                  response = eb_client.describe_environment_resources(EnvironmentName=env_name)
+                  load_balancers = response['EnvironmentResources']['LoadBalancers']
+                  if not load_balancers:
+                      raise Exception('No Load Balancer found')
+                  
+                  # assuming one load balancer is associated
+                  lb_arn = load_balancers[0]['Name']
+
+                  # describe the ELB to get DNS name and Hosted Zone ID
+                  lb_desc = elb_client.describe_load_balancers(LoadBalancerArns=[lb_arn])
+                  lb_dns_name = lb_desc['LoadBalancers'][0]['DNSName']
+                  lb_hosted_zone_id = lb_desc['LoadBalancers'][0]['CanonicalHostedZoneId']
+                  
+                  responseData = {
+                      'LoadBalancerArn': lb_arn,
+                      'DNSName': lb_dns_name,
+                      'HostedZoneId': lb_hosted_zone_id
+                  }
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData, physicalResourceId=lb_arn)
+              except Exception as e:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Message': str(e)})
+
+  EBLoadBalancerInfoTrigger:
+    Type: Custom::EBLoadBalancerInfoTrigger
+    Condition: TlsEnabled
+    Properties:
+      ServiceToken: !GetAtt EBLoadBalancerInfoLambda.Arn
+      EnvironmentName: !Ref EBEnvironment
+
+  EBDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: TlsEnabled
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Comment: DNS name for Elastic Beanstalk
+      Name:
+        !Join [
+          "",
+          [
+            "api-unianalytics-elb.",
+            !GetAtt EBHostedZoneLambdaTrigger.HostedZoneName,
+          ],
+        ]
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt EBLoadBalancerInfoTrigger.DNSName
+        HostedZoneId: !GetAtt EBLoadBalancerInfoTrigger.HostedZoneId
+        EvaluateTargetHealth: true
+
+  AWSEBV2LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: TlsEnabled
+    Properties:
+      LoadBalancerArn: !GetAtt EBLoadBalancerInfoTrigger.LoadBalancerArn
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Host: "#{host}"
+            Path: "/#{path}"
+            Port: "443"
+            Protocol: "HTTPS"
+            Query: "#{query}"
+            StatusCode: "HTTP_301"
+
+Outputs:
+  EndpointURL:
+    Description: URL to reach the load balancer and the API
+    Value: !If
+      - TlsEnabled
+      - !Join [
+          "",
+          [
+            "https://api-unianalytics-elb.",
+            !GetAtt EBHostedZoneLambdaTrigger.HostedZoneName,
+          ],
+        ]
+      - !Join ["", ["http://", !GetAtt EBEnvironment.EndpointURL]]

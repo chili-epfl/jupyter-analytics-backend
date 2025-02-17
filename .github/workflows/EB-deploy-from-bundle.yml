@@ -1,0 +1,50 @@
+name: Deploy to EB from Zipped Bundle
+
+on:
+  workflow_dispatch:
+    inputs:
+      flask_image_tag:
+        description: "The image of the Flask Docker image to deploy (e.g. 2024.04.30, try to avoid using latest)"
+        required: true
+      eb_app_name:
+        description: "The name of the Elastic Beanstalk Application (e.g. prod-unianalytics-app, see in AWS Elastic Beanstalk Console)"
+        required: true
+      eb_env_name:
+        description: "The name of the Elastic Beanstalk Environment (e.g. prod-unianalytics-env, see in AWS Elastic Beanstalk Console)"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  download-zip-bundle-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download zip bundle
+        run: |
+          wget "https://unianalytics-iac.s3.eu-north-1.amazonaws.com/github-actions-bundles/eb_bundle_unianalytics_prod_${{ github.event.inputs.flask_image_tag }}.zip" -O /tmp/bundle.zip
+
+      - name: Configure AWS credentials
+        id: creds
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: eu-north-1
+          role-to-assume: arn:aws:iam::097258850312:role/GitHubAction-AssumeRoleWithAction
+          output-credentials: true
+
+      - name: Deploy to EB
+        uses: einaregilsson/beanstalk-deploy@v21
+        with:
+          aws_access_key: ${{ steps.creds.outputs.aws-access-key-id }}
+          aws_secret_key: ${{ steps.creds.outputs.aws-secret-access-key }}
+          aws_session_token: ${{ steps.creds.outputs.aws-session-token }}
+          application_name: ${{ github.event.inputs.eb_app_name }}
+          environment_name: ${{ github.event.inputs.eb_env_name }}
+          version_label: ${{ github.event.inputs.flask_image_tag }}-${{ github.sha }}-${{ github.run_attempt }}
+          version_description: "Version deployed pulling unianalytics-prod:${{ github.event.inputs.flask_image_tag }} image and with GitHub Actions workflow from commit ${{github.sha}}"
+          region: eu-north-1
+          deployment_package: /tmp/bundle.zip

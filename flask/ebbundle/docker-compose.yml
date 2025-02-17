@@ -1,0 +1,29 @@
+services:
+  flask:
+    image: public.ecr.aws/f7y3w4q3/unianalytics-prod:<IMAGE-TAG>
+    container_name: flask-container
+    environment:
+      - RDS_HOSTNAME=${RDS_HOSTNAME}
+      - RDS_PORT=${RDS_PORT}
+      - RDS_DB_NAME=${RDS_DB_NAME}
+      - RDS_USERNAME=${RDS_USERNAME}
+      - RDS_PASSWORD=${RDS_PASSWORD}
+
+      - SECRET_SALT=${SECRET_SALT}
+      - SECRET_KEY=${SECRET_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - REDIS_MESSAGE_QUEUE_URL=${REDIS_MESSAGE_QUEUE_URL}
+
+      - S3_BUCKET_NAME=${S3_BUCKET_NAME}
+      - S3_PATH_NOTEBOOKS=${S3_PATH_NOTEBOOKS}
+
+  nginx-proxy:
+    image: nginx
+    ports:
+      - "80:80"
+    volumes:
+      - "./nginx-proxy/conf.d:/etc/nginx/conf.d" # copying the config bundle into app version zip
+      - "${EB_LOG_BASE_DIR}/nginx-proxy:/var/log/nginx" # mounting the logs in the EC2 host
+      - "/var/log/nginx/healthd:/var/log/nginx/healthd" # mounting the EC2 healthd/ logs
+    depends_on:
+      - flask
