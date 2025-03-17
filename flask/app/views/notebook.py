@@ -1,16 +1,19 @@
-from flask import Blueprint, request, jsonify, Response
-import json
 import datetime
+import json
+import os
+import uuid
+import zipfile
+from io import BytesIO
+
+import nbformat
 from app import db
 from app.models.models import Notebook
-from io import BytesIO
-import zipfile
-import nbformat
-from app.utils.storage import upload_file_to_volume, download_file_from_volume
-from app.utils.constants import Selectors 
-import uuid
-import os
-from flask_jwt_extended import jwt_required, current_user
+from app.utils.constants import Selectors
+from app.utils.storage import download_file_from_volume, upload_file_to_volume
+from app.utils.utils import generate_dag
+from flask_jwt_extended import current_user, jwt_required
+
+from flask import Blueprint, Response, jsonify, request
 
 notebook_bp = Blueprint('notebook', __name__)
 
@@ -57,12 +60,18 @@ def postS3Notebook():
         # in S3 the zip file will be named '.../{notebook_id}.zip'
         s3_object_key = os.environ.get('S3_PATH_NOTEBOOKS') + name.replace('.ipynb','') + '_' + notebook_id + '.zip'
 
+        try:
+            G = generate_dag(upgraded_nb)
+        except Exception as e:
+            return { 'error': f"An error occured while generating the notebook DAG: {str(e)}"}, 500
+
         new_notebook = Notebook(
             name=name,
             notebook_id=notebook_id,
             s3_bucket_name=os.environ.get('S3_BUCKET_NAME'),
             s3_object_key=s3_object_key,
-            time=datetime.datetime.now()
+            time=datetime.datetime.now(),
+            json_nx=G
         )
         db.session.add(new_notebook)
         db.session.commit()

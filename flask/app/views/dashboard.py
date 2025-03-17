@@ -469,3 +469,8 @@ def getGroups(notebook_id):
     group_names = [name[0] for name in group_names]
     return jsonify(group_names)
 
+
+@dashboard_bp.route('/<notebook_id>/dag', methods=['GET'])
+def getDag(notebook_id):
+    dag = db.session.scalar(select(Notebook.json_nx).where(Notebook.notebook_id == notebook_id))
+    return dag

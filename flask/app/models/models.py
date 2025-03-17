@@ -125,6 +125,7 @@ class Notebook(db.Model):
     s3_bucket_name = db.Column(db.String(300), nullable=False)
     s3_object_key = db.Column(db.String(500), nullable=False)
     time = db.Column(db.DateTime, nullable=False)
+    json_nx = db.Column(db.JSON, nullable=False)
 
     def __str__(self):
         return f"Notebook {self.name}, id : {self.notebook_id}"
