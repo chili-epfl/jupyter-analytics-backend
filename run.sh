@@ -46,20 +46,28 @@ case $ENVIRONMENT in
         ;;
 esac
 
+DOCKER_COMPOSE="docker-compose"
+if ! command -v docker-compose 2>&1 >/dev/null
+then
+    echo "Using 'docker compose' instead of 'docker-compose'"
+    DOCKER_COMPOSE="docker compose"
+fi
+
+
 # kill the previous containers and clear the volumes if requested
 if [ "$VOLUMES" = false ]; then
-    docker-compose -f "$DOCKER_COMPOSE_FILE" down
+    $DOCKER_COMPOSE -f "$DOCKER_COMPOSE_FILE" down
 else
-    docker-compose -f "$DOCKER_COMPOSE_FILE" down -v
+    $DOCKER_COMPOSE -f "$DOCKER_COMPOSE_FILE" down -v
 fi
 
 # build and start the services
-docker-compose -f "$DOCKER_COMPOSE_FILE" up --build -d
+$DOCKER_COMPOSE -f "$DOCKER_COMPOSE_FILE" up --build -d
 
 # run init_db script
-docker-compose -f "$DOCKER_COMPOSE_FILE" exec flask python init_db.py
+$DOCKER_COMPOSE -f "$DOCKER_COMPOSE_FILE" exec flask python init_db.py
 
 # if not in detached mode, show the real-time logs in the current shell
 if [ "$DETACH" = false ]; then
-    docker-compose -f "$DOCKER_COMPOSE_FILE" logs -f
+    $DOCKER_COMPOSE -f "$DOCKER_COMPOSE_FILE" logs -f
 fi
