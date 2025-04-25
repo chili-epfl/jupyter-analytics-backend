@@ -60,18 +60,13 @@ def postS3Notebook():
         # in S3 the zip file will be named '.../{notebook_id}.zip'
         s3_object_key = os.environ.get('S3_PATH_NOTEBOOKS') + name.replace('.ipynb','') + '_' + notebook_id + '.zip'
 
-        try:
-            G = generate_dag(upgraded_nb)
-        except Exception as e:
-            return { 'error': f"An error occured while generating the notebook DAG: {str(e)}"}, 500
-
         new_notebook = Notebook(
             name=name,
             notebook_id=notebook_id,
             s3_bucket_name=os.environ.get('S3_BUCKET_NAME'),
             s3_object_key=s3_object_key,
             time=datetime.datetime.now(),
-            json_nx=G
+            json_nx=None
         )
         db.session.add(new_notebook)
         db.session.commit()
@@ -84,6 +79,43 @@ def postS3Notebook():
     except Exception as e:
         db.session.rollback()
         return { 'error': f"An error occurred uploading the notebook to the server: {str(e)}"}, 500
+
+
+@notebook_bp.route('/dag/<notebook_id>', methods=['POST'])
+@jwt_required()
+def setDagOfNotebookIdFromSolution(notebook_id):
+    if not current_user.is_superuser:
+        return { 'error': 'The dashboard user does not have rights to upload notebooks' }, 401
+    
+    solution_notebook_content_str = request.form['notebook_content']
+    solution_name = request.form['name']
+    try:
+        notebook = Notebook.query.filter_by(notebook_id=notebook_id).first()
+        zip_file_content = download_file_from_volume(notebook.s3_bucket_name, notebook.s3_object_key)
+        with zipfile.ZipFile(BytesIO(zip_file_content)) as z_file:
+            with z_file.open(notebook.name) as nb_file:
+                notebook_content = nbformat.reads(nb_file.read(), as_version=nbformat.NO_CONVERT)
+                notebook_cell_mappings = notebook_content["metadata"]["unianalytics_cell_mapping"]
+    except Exception as e:
+        return {'error': f"An error occured when retrieving notebook with id {notebook_id}: {str(e)}"}, 500
+
+    try:
+        # upgrade the notebook if necessary (older versions might for example not have cell ids)
+        nb = nbformat.reads(solution_notebook_content_str, as_version=nbformat.NO_CONVERT)
+        upgraded_nb = nbformat.v4.upgrade(nb)
+
+        if len(upgraded_nb.cells) != len(notebook_content.cells):
+            return {'error': 'The solution notebook has a number of cells different from the original notebook, thus the dag cannot be generated.'}, 400
+
+        G = generate_dag(upgraded_nb, notebook_cell_mappings)
+        notebook.json_nx = G
+        db.session.commit()
+
+        return jsonify(G)
+
+    except Exception as e:
+        return { 'error': f"An error occurred while creating the DAG for the notebook : {str(e)}" }, 500
+
 
 @notebook_bp.route('/download/<notebook_id>', methods=['GET'])
 def downloadS3NotebookById(notebook_id):
