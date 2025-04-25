@@ -473,4 +473,6 @@ def getGroups(notebook_id):
 @dashboard_bp.route('/<notebook_id>/dag', methods=['GET'])
 def getDag(notebook_id):
     dag = db.session.scalar(select(Notebook.json_nx).where(Notebook.notebook_id == notebook_id))
+    if dag is None:
+        return jsonify({"message": f"No DAG for this notebook or no notebook with this id"}), 404
     return dag
