@@ -4,6 +4,7 @@ import os
 import uuid
 import zipfile
 from io import BytesIO
+from urllib.parse import quote as urllib_quote
 
 import nbformat
 from app import db
@@ -131,14 +132,15 @@ def downloadS3NotebookById(notebook_id):
         if zip_file_content is None:
             return 'Notebook file not found', 404
 
+        notebook_filename = f"{notebook.name.replace('.ipynb','')}_{notebook_id}.zip"
         # set the appropriate headers for the response
         headers = {
-            'Content-Disposition': f"attachment; filename={notebook.name.replace('.ipynb','')}_{notebook_id}.zip",
+            'Content-Disposition': f"attachment; filename*=UTF-8''{urllib_quote(notebook_filename)}",
             'Content-Type': 'application/zip'
         }
 
         # return the compressed zip file as a response with headers
-        return Response(zip_file_content, headers=headers)
+        return Response(zip_file_content, headers=headers, content_type="application/zip")
 
     except Exception as e:
         return f"An error occurred while retrieving the notebook: {str(e)}", 500
