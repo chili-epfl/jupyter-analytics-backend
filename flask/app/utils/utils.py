@@ -102,7 +102,6 @@ def generate_dag(notebook, notebook_cell_mappings):
                     current_part, current_level = found_part, found_level
                     G.add_node(4096 - i, label=current_part, part=current_part, level=current_level)
                     special_nodes.append(4096 - i)
-                print(f"[level {current_level}] {current_part}")
                 continue
 
             defs, uses, imports = analyze_code(cell.source)
@@ -138,24 +137,9 @@ def generate_dag(notebook, notebook_cell_mappings):
                     if cell_imports.get(j) & uses:
                         G.add_edge(j, i)
         for special_node_id in special_nodes:
-            if len(G.edges([special_node_id])) == 0:
-                print(f"Pruning : {G.nodes[special_node_id]}")
+            if len(G.to_undirected(as_view=True).edges([special_node_id])) == 0:
                 G.remove_node(special_node_id)
         return G
 
-    def visualize_graph(G, path=None, fig_size=(8,6), node_size=2000, font_size=10, json_path=None):
-        plt.figure(figsize=fig_size)
-        pos = nx.shell_layout(G)  # Shell layout to position nodes in concentric circles
-        labels = nx.get_node_attributes(G, 'label')
-        nx.draw(G, pos, with_labels=True, labels=labels, node_color='skyblue', node_size=node_size, font_size=font_size, arrows=True)
-        if path:
-            plt.savefig(path, transparent=True, dpi=300)
-        else:
-            plt.show()
-        if json_path:
-            with open(json_path, "w") as f:
-                json.dump(json_graph.node_link_data(G, edges="edges"), f)
-
     G = create_dependency_graph(notebook, notebook_cell_mappings, incl_import=True)
-    # visualize_graph(G, path="debug.jpg")
     return json.dumps(json_graph.node_link_data(G, edges="edges"))
