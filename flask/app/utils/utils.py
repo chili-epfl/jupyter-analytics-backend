@@ -39,7 +39,7 @@ def hash_user_id_with_salt(prehashed_id):
 def generate_dag(notebook, notebook_cell_mappings):
     # adapted from Zhenyu Cai's code
     # Extract variable definitions and usage from a code cell using AST
-    part_regexp = re.compile(r"#+\s.*\n\n")
+    part_regexp = re.compile(r"#+\s.*\n+")
     def analyze_code(code):
         definitions = set()
         usages = set()
