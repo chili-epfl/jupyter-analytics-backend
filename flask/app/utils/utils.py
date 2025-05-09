@@ -94,6 +94,7 @@ def generate_dag(notebook, notebook_cell_mappings):
         current_part = "<start>"
         current_level = 0
         special_nodes = []
+        G.add_node(4096 + 1, label=current_part, part=current_part, level=current_level)
         # Iterate through the cells and analyze dependencies
         for i, cell in enumerate(notebook.cells):
             if cell.cell_type != 'code':
