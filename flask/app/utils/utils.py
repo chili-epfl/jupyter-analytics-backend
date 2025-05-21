@@ -64,6 +64,10 @@ def generate_dag(notebook, notebook_cell_mappings):
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         definitions.add(target.id)
+                    elif isinstance(target, ast.Tuple):
+                        for element in target.elts:
+                            if isinstance(element, ast.Name):
+                                definitions.add(element.id)
 
             # Handle function definitions
             elif isinstance(node, ast.FunctionDef):
@@ -80,9 +84,9 @@ def generate_dag(notebook, notebook_cell_mappings):
         return definitions, usages, imports
 
     def analyze_markdown(cell_source):
-        matches = part_regexp.search(cell_source)
+        matches = part_regexp.findall(cell_source)
         if matches:
-            return matches[0].strip(), len([_ for _ in matches[0] if _ == "#"])
+            return matches[-1].strip(), len([_ for _ in matches[-1] if _ == "#"])
         return None, None
 
     # Create the dependency graph
@@ -95,11 +99,12 @@ def generate_dag(notebook, notebook_cell_mappings):
         current_level = 0
         special_nodes = []
         G.add_node(4096 + 1, label=current_part, part=current_part, level=current_level)
+        special_nodes.append(4096 + 1)
         # Iterate through the cells and analyze dependencies
         for i, cell in enumerate(notebook.cells):
             if cell.cell_type != 'code':
                 found_part, found_level = analyze_markdown(cell["source"])
-                if found_part and found_part != current_part:
+                if found_part:
                     current_part, current_level = found_part, found_level
                     G.add_node(4096 - i, label=current_part, part=current_part, level=current_level)
                     special_nodes.append(4096 - i)
