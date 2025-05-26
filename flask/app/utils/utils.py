@@ -6,6 +6,8 @@ import re
 from hashlib import sha256
 
 import networkx as nx
+import pandas as pd
+from collections import deque
 from networkx.readwrite import json_graph
 
 
@@ -149,3 +151,176 @@ def generate_dag(notebook, notebook_cell_mappings):
 
     G = create_dependency_graph(notebook, notebook_cell_mappings, incl_import=True)
     return json.dumps(json_graph.node_link_data(G, edges="edges"))
+
+
+def get_ideal_collab_from_dag(G):
+    """Return the Graph as a topological order grouped by level
+
+    :param G: acyclic nx.DiGraph
+    """
+    filtered_dag = G.copy()
+    for n in G:
+        if n < 4000:
+            filtered_dag.remove_node(n)
+    in_degree = dict(filtered_dag.in_degree())
+    queue = deque([node for node in filtered_dag if in_degree[node] == 0])
+    levels = []
+    while queue:
+        level = list(queue)
+        levels.append(level)
+        for _ in range(len(queue)):
+            node = queue.popleft()
+            for neighbor in filtered_dag.successors(node):
+                in_degree[neighbor] -= 1
+                if in_degree[neighbor] == 0:
+                    queue.append(neighbor)
+    return levels
+
+def parse_json_G(json_G):
+    """Helper function to build a networkx graph from json
+
+    :param json_G: dict object
+    :return: nx.Graph
+    """
+    return nx.node_link_graph(json_G, edges="edges")
+
+
+def convert_cell_execs_to_part_execs(cell_execs, G):
+    """Retrieves the part of each cell execution with their timestamp
+
+    :param cell_execs: list e.g. [{'cell': '2f45e95e', 'timestamp': '2025-03-18T07:30:45.368000'}],
+    :param G: networkx.DiGraph
+    :return: list e.g. [(4097, '## Partie 1', '2025-03-18T07:30:45.368000')]
+    """
+    # mapping from cell id to node id
+    cell_id2node_id = {v[0]: k for k, v in nx.get_node_attributes(
+        G, name="cell_id").items()}
+
+    part_name2node_id = {v: k for k, v in nx.get_node_attributes(
+        G, name="label").items() if k > 4000}
+    part_execs = []
+    for c_exe in cell_execs:
+        # get the corresponding part of the graph for c_exe
+        try:
+            part_name = G.nodes[cell_id2node_id[c_exe["cell"]]]["part"]
+        except KeyError:
+            # print(f"Cell {c_exe['cell']} not found, skipping")
+            continue
+        part_execs.append((part_name2node_id[part_name], part_name, c_exe["timestamp"]))
+    
+    df = pd.DataFrame(part_execs, columns=["part_id", "part_name", "t"])
+    df["timestamp"] = pd.to_datetime(df["t"])
+    df.drop(columns=["t"], inplace=True)
+    df.sort_values(by="timestamp")
+
+    return df
+
+
+def filter_top_n_percent(group, n):
+    """Return only the entries that contributed until n% of the cum sum of counts
+
+    :param group: groupby object
+    :param n: percentage (0.0-1.0)
+    :return: filtered groupby object
+    """
+    group = group.sort_values(by="count", ascending=False)
+    total = group['count'].sum()
+    if total == 0:
+        return group.iloc[[]]  # Return empty if total is 0 to avoid division by zero
+    group['cumsum'] = group['count'].cumsum()
+    group['cumsum_contrib'] = group['cumsum'] / total
+    return group[group['cumsum_contrib'] <= n][["part_id", "count", "part_name", "cumsum_contrib"]]
+
+def compute_part_execs_per_slice(df_part_execs, slice_size=1, n=0.95):
+    """Return the contributing parts for each slice
+
+    :param df_part_execs: dataframe with all parts executions and timestamps
+    :param slice_size: time slice size in minutes, defaults to 1
+    :param n: percentage (0.0-1.0), defaults to 0.95
+    :return: dataframe
+    """
+    # Reference start time (minimum timestamp <or start of the lab)
+    start_time = df_part_execs['timestamp'].min()
+    # Compute bin index based on their timestamp
+    df_part_execs['bin'] = ((df_part_execs['timestamp'] - start_time) /
+                            pd.Timedelta(minutes=slice_size)).astype(int)
+    return (df_part_execs.groupby(["bin", "part_id"])  # group by bin and part id
+            .agg({"part_id": "size", "part_name": "first"})  # keep the number of times the part has been executed and its name
+            .reset_index(level="part_id", names=["", "p"])
+            .rename(columns={"p": "part_id", "part_id": "count"})
+            .rename_axis("slice_index")
+            .reset_index()
+            .groupby("slice_index")[["part_id", "count", "part_name"]]  # filter the part(s) that contributed to 95% of the executions in the time slice
+            .apply(filter_top_n_percent, n=n)
+            .reset_index(level=1, drop=True)
+            .reset_index())
+
+def jaccard_score(set_1, set_2):
+    """Return jaccard score between two sets.
+
+    :param set_1: set
+    :param set_2: set
+    :return: float
+    """
+    intersection = len(set_1 & set_2)
+    union = len(set_1 | set_2)
+    return intersection / union if union != 0 else 1.0
+
+def compare_lists_of_lists(actual_code_execs, ideal_collab):
+    """Return the mean jaccard score for each list of list pair
+
+    :param actual_code_execs: list of list containing the parts
+    :param ideal_collab: list of list containing the ideal parts
+    :return: float
+    """
+    actual_sets = [set(sublist) for sublist in actual_code_execs]
+    collab_sets = [set(sublist) for sublist in ideal_collab]
+    
+    # padding
+    max_len = max(len(actual_sets), len(collab_sets))
+    actual_sets += [set()] * (max_len - len(actual_sets))
+    collab_sets += [set()] * (max_len - len(collab_sets))
+
+    scores = [jaccard_score(a, b) for a, b in zip(actual_sets, collab_sets)]
+    # return the mean jaccard score between two lists of lists
+    return sum(scores) / len(scores)
+
+def compute_collaboration_score(df_part_execs, ideal_collab, debug_mode=False):
+    """Computes a collaboration score from a dataframe containing the executions of each part and an ideal collaboration scheme.
+
+    :param df_part_execs: dataframe
+    :param ideal_collab: list of list
+    :param debug_mode: if True, will return the score for each slice size instead of juste the maximum score.
+    :return: score
+    """
+    results = []
+    for slice_size in [1, 2, 5, 10, 15, 30, 60]:
+        ideal_collab_copy = [v[:] for v in ideal_collab]
+        # print("\n\n")
+        df_per_slice = compute_part_execs_per_slice(df_part_execs, slice_size=slice_size, n=0.95)
+        # print(f"{slice_size} min slice(s):")
+        # print(df_per_slice)
+        # keep only the parts that have been touched by the group
+        worked_on_parts = df_per_slice["part_id"].unique().tolist()
+        for section in ideal_collab_copy:
+            for part_id in section:
+                if part_id not in worked_on_parts:
+                    # print(f"Ignoring part {part_id} in ideal collab because not started!")
+                    section.remove(part_id)
+        df_as_list = df_per_slice.groupby("slice_index").agg({"part_id": list}).part_id.tolist()
+        score = compare_lists_of_lists(actual_code_execs=df_as_list, ideal_collab=ideal_collab_copy)
+
+        # print("score", "{:.3f}".format(score))
+        results.append((slice_size, score, df_as_list))
+
+    if debug_mode:
+        # return the scores per slice size
+        return [(slice_size, score) for slice_size, score, _ in results]
+    
+    sorted_results = sorted(results, key=lambda x: x[1])
+    best_slice_size, best_score, best_df_as_list = sorted_results[-1]
+
+    # print("Best score for this team : {:.3f} for slice size of {} minutes.".format(best_score, best_slice_size))
+    # print("ideal_collab", ideal_collab)
+    # print("as_list", best_df_as_list)
+    return best_score

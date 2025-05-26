@@ -2,7 +2,7 @@ from flask import Blueprint, request, jsonify, Response, stream_with_context
 import json
 from app import db, redis_client
 from app.models.models import Notebook, Event, CellExecution, CellClickEvent, NotebookClickEvent, CellAlteration, UserGroupAssociation, UserGroups
-from app.utils.utils import get_fetch_real_time, get_time_boundaries
+from app.utils.utils import get_fetch_real_time, get_time_boundaries, convert_cell_execs_to_part_execs, get_ideal_collab_from_dag, compute_collaboration_score, parse_json_G
 from sqlalchemy import func, and_, select, or_
 from sqlalchemy.orm import with_polymorphic
 from flask_jwt_extended import jwt_required, current_user
@@ -54,7 +54,104 @@ def checkNotebook(notebook_id):
 
     return jsonify({ 'status': 'success' }), 200
 
+def getDagAndCellExecsFromDatabase(notebook_id, url_args):
+    dag = db.session.scalar(select(Notebook.json_nx).where(Notebook.notebook_id == notebook_id))
+    json_G = json.loads(dag)
+
+    t_start, t_end = get_time_boundaries(url_args)
+    # if t_end is defined, real time is ignored and set to False since what happens in real-time is not included anymore
+    fetch_real_time = get_fetch_real_time(url_args, t_end)
+    if fetch_real_time: connected_students = getConnectedStudentUserIds(notebook_id)
+    else: connected_students = None
+    selected_groups = url_args.get('selectedGroups', None)
+    if selected_groups: selected_groups = json.loads(selected_groups)
+    group_pks = [f"{group_name}-{notebook_id}" for group_name in selected_groups]
+    
+    group_subq = (
+        select(
+            UserGroupAssociation.c.user_id,
+            UserGroupAssociation.c.group_pk
+        )
+        .where(UserGroupAssociation.c.group_pk.in_(group_pks))
+        .subquery()
+    )
+
+    # get code execution information
+    code_exec_subq = db.session.query(
+        CellExecution.cell_id,
+        CellExecution.t_finish,
+        group_subq.c.group_pk
+    ) \
+    .join(group_subq, CellExecution.user_id == group_subq.c.user_id) \
+    .filter(
+        CellExecution.cell_type == 'CodeExecution',
+        CellExecution.notebook_id == notebook_id,
+        and_(
+            CellExecution.t_finish > t_start if t_start is not None else True,
+            CellExecution.t_finish <= t_end if t_end is not None else True
+        ))
+    
+    if fetch_real_time:
+        code_exec_subq = code_exec_subq.filter(
+            CellExecution.user_id.in_(connected_students)
+        )
+
+    if selected_groups:
+        code_exec_subq = code_exec_subq.filter(
+            CellExecution.user_id.in_(getGroupsUserIdsSubquery(notebook_id, selected_groups))
+        )
+    
+    # code_execs_subquery
+    data = db.session.execute(select(code_exec_subq.subquery()))
+    
+    cell_execs_with_timestamp_per_group = {}
+    for cell, t_finish, pk in data:
+        t_finish_formatted = t_finish.strftime("%Y-%m-%dT%H:%M:%S.%f%z")
+        if pk not in cell_execs_with_timestamp_per_group.keys():
+            cell_execs_with_timestamp_per_group[pk] = [{"cell": cell, "timestamp": t_finish_formatted}]
+        else:
+            cell_execs_with_timestamp_per_group[pk].append({"cell": cell, "timestamp": t_finish_formatted})
+
+    G = parse_json_G(json_G)
+
+    return G, cell_execs_with_timestamp_per_group
+
+@dashboard_bp.route('/<notebook_id>/debug_collaboration_score', methods=['GET'])
+def debugGetCollaborationScore(notebook_id):
+    G, raw_execs_per_groups = getDagAndCellExecsFromDatabase(notebook_id, request.args)
+
+    ideal_collab = get_ideal_collab_from_dag(G)
+    collaboration_scores = []
+    for group_pk, cell_execs_with_timestamp in raw_execs_per_groups.items():
+        part_execs_df = convert_cell_execs_to_part_execs(cell_execs_with_timestamp, G)
+        try:
+            scores_per_timeslice = compute_collaboration_score(part_execs_df, ideal_collab, debug_mode=True)
+        except Exception as e:
+            print(e)
+            scores_per_timeslice = []
+        collaboration_scores.append({"group_id": group_pk, "collaboration_scores": scores_per_timeslice})
+
+    return jsonify(collaboration_scores)
+
+
+
 ### Notebook dashboard ###
+@dashboard_bp.route('/<notebook_id>/collaboration_score', methods=['GET'])
+def getCollaborationScore(notebook_id):
+    G, raw_execs_per_groups = getDagAndCellExecsFromDatabase(notebook_id, request.args)
+    ideal_collab = get_ideal_collab_from_dag(G)
+    collaboration_scores = []
+    for group_pk, cell_execs_with_timestamp in raw_execs_per_groups.items():
+        part_execs_df = convert_cell_execs_to_part_execs(cell_execs_with_timestamp, G)
+        try:
+            score = compute_collaboration_score(part_execs_df, ideal_collab)
+        except Exception as e:
+            print(e)
+            score = 0
+        collaboration_scores.append({"group_id": group_pk, "collaboration_score": round(score, 5)})
+
+    return jsonify(collaboration_scores)
+
 
 @dashboard_bp.route('/<notebook_id>/user_code_execution', methods=['GET'])
 def listNotebookCellExecution(notebook_id):
