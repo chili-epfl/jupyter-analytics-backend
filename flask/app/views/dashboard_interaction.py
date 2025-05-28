@@ -21,7 +21,8 @@ def add_dashboard_interaction():
             click_type=data['click_type'],
             signal_origin=data['signal_origin'],
             notebook_id=data.get('notebook_id', None),
-            timestamp=datetime.datetime.strptime(data['time'],'%Y-%m-%dT%H:%M:%S.%f%z')
+            timestamp=datetime.datetime.strptime(data['time'],'%Y-%m-%dT%H:%M:%S.%f%z'),
+            dashboard_type='TEACHER'
         )
         db.session.add(new_dashboard_event)
         db.session.commit()

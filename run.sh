@@ -48,18 +48,18 @@ esac
 
 # kill the previous containers and clear the volumes if requested
 if [ "$VOLUMES" = false ]; then
-    docker-compose -f "$DOCKER_COMPOSE_FILE" down
+    docker compose -f "$DOCKER_COMPOSE_FILE" down
 else
-    docker-compose -f "$DOCKER_COMPOSE_FILE" down -v
+    docker compose -f "$DOCKER_COMPOSE_FILE" down -v
 fi
 
 # build and start the services
-docker-compose -f "$DOCKER_COMPOSE_FILE" up --build -d
+docker compose -f "$DOCKER_COMPOSE_FILE" up --build -d
 
 # run init_db script
-docker-compose -f "$DOCKER_COMPOSE_FILE" exec flask python init_db.py
+docker compose -f "$DOCKER_COMPOSE_FILE" exec flask python init_db.py
 
 # if not in detached mode, show the real-time logs in the current shell
 if [ "$DETACH" = false ]; then
-    docker-compose -f "$DOCKER_COMPOSE_FILE" logs -f
+    docker compose -f "$DOCKER_COMPOSE_FILE" logs -f
 fi

@@ -25,7 +25,7 @@ def payload_check_middleware():
     # check if the notebook_id exists in the database
     notebook = Notebook.query.filter_by(notebook_id=notebook_id).first()
     if not notebook:
-        return jsonify('Notebook not found'), 404
+        return jsonify(f'Notebook {notebook_id} not found'), 404
     
     return
 
@@ -57,10 +57,24 @@ send_bp.after_request(websocket_post_to_client)
 
 @send_bp.route('/exec/code', methods=['POST'])
 def postCodeExec():
+    def extractCellOutput(cell_output_model):
+        cell_output = [o.get('text', '') for o in cell_output_model]
+        # If 'text' was not present, try 'traceback' (errors don't define 'text')
+        cell_output = ['\n'.join(cell_output_model[i].get('traceback', [])) if not o else o for (i, o) in enumerate(cell_output)]
+        cell_output = '\n'.join([o for o in cell_output if o])
+        return cell_output
+    
+    def extractErrorType(cell_output_model):
+        enames = [error['ename'] for error in cell_output_model if 'ename' in error]
+        return enames[0] if enames else None
+    
     data = request.get_json()
     hashed_user_id = hash_user_id_with_salt(data['user_id'])
 
     try:
+        cell_output_model = data["cell_output_model"]
+        cell_output = extractCellOutput(cell_output_model)
+        error_type = extractErrorType(cell_output_model)
 
         new_code_exec = CellExecution(
             notebook_id=data["notebook_id"],
@@ -69,12 +83,14 @@ def postCodeExec():
             orig_cell_id=data['orig_cell_id'],
             t_start=datetime.datetime.strptime(data["t_start"],'%Y-%m-%dT%H:%M:%S.%f%z'),
             cell_input=data["cell_input"],
+            cell_output=cell_output,
             cell_type="CodeExecution",
             language_mimetype=data["language_mimetype"],
             t_finish=datetime.datetime.strptime(data["t_finish"],'%Y-%m-%dT%H:%M:%S.%f%z'),
             status=data["status"],
-            cell_output_model=data["cell_output_model"],
-            cell_output_length=data["cell_output_length"]
+            cell_output_model=cell_output_model,
+            cell_output_length=data["cell_output_length"],
+            error_type=error_type,
         )
         db.session.add(new_code_exec)
         db.session.commit()

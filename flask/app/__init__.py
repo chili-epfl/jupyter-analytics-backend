@@ -7,6 +7,7 @@ from flask_jwt_extended import JWTManager
 from datetime import timedelta
 from flask_socketio import SocketIO
 import redis
+from flask_msearch import Search
 
 db = SQLAlchemy()
 
@@ -21,7 +22,13 @@ redis_client = redis.from_url(os.environ.get('REDIS_MESSAGE_QUEUE_URL'))
 def create_app():
 
     app = Flask(__name__)
-    
+
+    search = Search(db=db)
+    search.init_app(app)
+    MSEARCH_INDEX_NAME = os.path.join(app.root_path,'msearch')
+    # MSEARCH_BACKEND = 'whoosh' # Possible alternative
+    MSEARCH_ENABLE = True
+
     cors = CORS(app, origins='*')
     
     app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql+psycopg://{username}:{password}@{host}:{port}/{database}'.format(
@@ -36,6 +43,9 @@ def create_app():
     app.config["JWT_ACCESS_TOKEN_EXPIRES"] = timedelta(minutes=30) # default: 15 mins
     app.config["JWT_REFRESH_TOKEN_EXPIRES"] = timedelta(days=30) # default: 30 days
     app.config['SECRET_KEY'] = os.environ['SECRET_KEY']
+    app.config['LLM_API_URL'] = os.environ['LLM_API_URL']
+    app.config['LLM_API_KEY'] = os.environ['LLM_API_KEY']
+    app.config['LLM_MODEL'] = os.environ['LLM_MODEL']
     
     db.init_app(app)
     migrate.init_app(app, db)
@@ -51,7 +61,9 @@ def create_app():
     from .views.jwt import jwt_bp
     from .views.groups import groups_bp
     from .views.dashboard_interaction import dashboard_interaction_bp
-    
+    from .views.student.dashboard import dashboard_bp as student_dashboard_bp
+    from .views.student.dashboard_interaction import dashboard_interaction_bp as student_dashboard_interaction_bp
+
     app.register_blueprint(main_bp, url_prefix='/')
     app.register_blueprint(event_bp, url_prefix='/event')
     app.register_blueprint(send_bp, url_prefix='/send')
@@ -62,6 +74,9 @@ def create_app():
     app.register_blueprint(groups_bp, url_prefix='/groups')
     app.register_blueprint(dashboard_interaction_bp, url_prefix='/dashboard_interaction')
     
+    app.register_blueprint(student_dashboard_bp, url_prefix='/student/dashboard')
+    app.register_blueprint(student_dashboard_interaction_bp, url_prefix='/student/dashboard_interaction')
+
     jwt.init_app(app)
 
     return app
