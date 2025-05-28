@@ -113,6 +113,58 @@ class CellAlteration(Event):
     def __str__(self):
         return f"Cell Alteration Event (id: {self.id}), [{self.alteration_type}], cell : {self.cell_id}, notebook :  {self.notebook_id}"
 
+class CopyPasteType(enum.Enum):
+    CELL = "cell"
+    CLIPBOARD = "clipboard"
+
+# Copy Paste Event
+
+class CopyPasteEvent(Event):
+    __tablename__ = 'CopyPasteEvent'
+
+    id = db.Column(db.Integer, db.ForeignKey('Event.id', ondelete="CASCADE"), primary_key=True)
+    cell_id = db.Column(db.String(100), nullable=False)
+    time = db.Column(db.DateTime, nullable=False)
+    content = db.Column(db.String(300), nullable=False) # TODO DECIDE MAX LENGTH
+    copy_paste_type = db.Column(db.Enum(CopyPasteType), nullable=False)
+
+    __mapper_args__ = {
+        'polymorphic_identity': 'CopyPasteEvent'
+    }
+
+    def __str__(self):
+        return f"Copy/Paste Event (id: {self.id}), type : {self.copy_paste_type}, notebook :  {self.notebook_id}, cell : {self.cell_id}, content : {self.content}, (copied notebook : {self.copied_notebook_id}, copied cell : {self.copied_cell_id},)"
+
+class CopyEvent(CopyPasteEvent):
+    __tablename__ = 'CopyEvent'
+
+    id = db.Column(db.Integer, db.ForeignKey('CopyPasteEvent.id', ondelete="CASCADE"), primary_key=True)
+
+    __mapper_args__ = {
+        'polymorphic_identity': 'CopyEvent'
+    }
+
+    def __str__(self):
+        return f"Copy Event (id: {self.id}), type : {self.copy_paste_type}, notebook :  {self.notebook_id}, cell : {self.cell_id}, content : {self.content}"
+
+class PasteEvent(CopyPasteEvent):
+    __tablename__ = 'PasteEvent'
+
+    id = db.Column(db.Integer, db.ForeignKey('CopyPasteEvent.id', ondelete="CASCADE"), primary_key=True)
+    copied_notebook_id = db.Column(db.String(100), nullable=True)
+    copied_cell_id = db.Column(db.String(100), nullable=True)
+    copied_time = db.Column(db.DateTime, nullable=True)
+
+    __mapper_args__ = {
+        'polymorphic_identity': 'PasteEvent'
+    }
+
+    def __str__(self):
+        if self.copy_paste_type == CopyPasteType.CLIPBOARD:
+            return f"Paste Event (id: {self.id}), type : {self.copy_paste_type}, notebook :  {self.notebook_id}, cell : {self.cell_id}, content : {self.content}"
+        return f"Paste Event (id: {self.id}), type : {self.copy_paste_type}, notebook :  {self.notebook_id}, cell : {self.cell_id}, content : {self.content}, (copied notebook : {self.copied_notebook_id}, copied cell : {self.copied_cell_id})"
+
+
 # Notebook registration
 
 class Notebook(db.Model):

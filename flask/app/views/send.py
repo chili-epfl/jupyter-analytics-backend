@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 import datetime
 from app import db, socketio
-from app.models.models import CellExecution, CellClickEvent, ConnectionType, NotebookClickEvent, CellAlteration, Notebook
+from app.models.models import CellExecution, CellClickEvent, ConnectionType, NotebookClickEvent, CellAlteration, Notebook, CopyPasteType, CopyEvent, PasteEvent
 from app.utils.constants import MAX_PAYLOAD_SIZE
 from app.utils.cache import check_refresh_cache
 from app.utils.utils import hash_user_id_with_salt
@@ -174,4 +174,98 @@ def postAlterEvent():
     except Exception as e:
         db.session.rollback()
         return f'An error occurred: {str(e)}', 500
+            
+@send_bp.route('/copyevent/cell', methods=['POST'])
+def postCellCopyEvent():
+    data = request.get_json()
+    hashed_user_id = hash_user_id_with_salt(data['user_id'])
+
+    try:
+        new_copy_event = CopyEvent(
+            notebook_id=data["notebook_id"],
+            user_id=hashed_user_id,
+            cell_id=data["cell_id"],
+            time=datetime.datetime.strptime(data["time"],'%Y-%m-%dT%H:%M:%S.%f%z'),
+            content=data["content"],
+            copy_paste_type=CopyPasteType.CELL,
+        )
+
+        db.session.add(new_copy_event)
+        db.session.commit()
+        return jsonify('Cell Copy OK')
     
+    except Exception as e:
+        db.session.rollback()
+        return f'An error occurred: {str(e)}', 500
+    
+@send_bp.route('/pasteevent/cell', methods=['POST'])
+def postCellPasteEvent():
+    data = request.get_json()
+    hashed_user_id = hash_user_id_with_salt(data['user_id'])
+
+    try:
+        new_paste_event = PasteEvent(
+            notebook_id=data["notebook_id"],
+            user_id=hashed_user_id,
+            copied_notebook_id=data["copied_notebook_id"],
+            copied_cell_id=data["copied_cell_id"],
+            copied_time=datetime.datetime.strptime(data["copied_time"],'%Y-%m-%dT%H:%M:%S.%f%z'),
+            cell_id=data["cell_id"],
+            time=datetime.datetime.strptime(data["time"],'%Y-%m-%dT%H:%M:%S.%f%z'),
+            content=data["content"],
+            copy_paste_type=CopyPasteType.CELL,
+        )
+
+        db.session.add(new_paste_event)
+        db.session.commit()
+        return jsonify('Cell Paste OK')
+    
+    except Exception as e:
+        db.session.rollback()
+        return f'An error occurred: {str(e)}', 500
+
+@send_bp.route('/copyevent/clipboard', methods=['POST'])
+def postClipboardCopyEvent():
+    data = request.get_json()
+    hashed_user_id = hash_user_id_with_salt(data['user_id'])
+
+    try:
+        new_copy_event = CopyEvent(
+            notebook_id=data["notebook_id"],
+            user_id=hashed_user_id,
+            cell_id=data["cell_id"],
+            time=datetime.datetime.strptime(data["time"],'%Y-%m-%dT%H:%M:%S.%f%z'),
+            content=data["content"],
+            copy_paste_type=CopyPasteType.CLIPBOARD,        
+        )
+
+        db.session.add(new_copy_event)
+        db.session.commit()
+        return jsonify('Clipboard Copy OK')
+    
+    except Exception as e:
+        db.session.rollback()
+        return f'An error occurred: {str(e)}', 500
+    
+@send_bp.route('/pasteevent/clipboard', methods=['POST'])
+def postClipboardPasteEvent():
+    data = request.get_json()
+    hashed_user_id = hash_user_id_with_salt(data['user_id'])
+
+    try:
+        new_paste_event = PasteEvent(
+            notebook_id=data["notebook_id"],
+            user_id=hashed_user_id,
+            cell_id=data["cell_id"],
+            time=datetime.datetime.strptime(data["time"],'%Y-%m-%dT%H:%M:%S.%f%z'),
+            content=data["content"],
+            copy_paste_type=CopyPasteType.CLIPBOARD,        
+        )
+
+        db.session.add(new_paste_event)
+        db.session.commit()
+        return jsonify('Clipboard Paste OK')
+    
+    except Exception as e:
+        db.session.rollback()
+        return f'An error occurred: {str(e)}', 500
