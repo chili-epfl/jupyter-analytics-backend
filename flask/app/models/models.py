@@ -22,12 +22,14 @@ class Event(db.Model):
 class CellExecution(Event):
 
     __tablename__ = 'CellExecution'
+    __searchable__ = ['cell_input', 'cell_output']
 
     id = db.Column(db.Integer, db.ForeignKey('Event.id', ondelete="CASCADE"), primary_key=True)
     cell_id = db.Column(db.String(100), nullable=False)
     orig_cell_id = db.Column(db.String(100), nullable=False) # can be null or undefined when not available in the metadata
     t_start = db.Column(db.DateTime, nullable=False)
     cell_input = db.Column(db.Text, nullable=False)
+    cell_output = db.Column(db.Text, nullable=True)
     cell_type = db.Column(db.String(32), nullable=False)
 
     # attributes specific to code cell executions (nullable) :
@@ -36,6 +38,7 @@ class CellExecution(Event):
     status = db.Column(db.String(20)) # 'ok', 'error' or 'abort'
     cell_output_model = db.Column(db.PickleType)
     cell_output_length = db.Column(db.Integer)
+    error_type = db.Column(db.String(30)) # e.g. TypeError, NameError
 
     __mapper_args__ = {
         'polymorphic_identity': 'CellExecution'
@@ -144,20 +147,25 @@ class RefreshDashboardCache(db.Model):
     def __str__(self):
         return f"{self.notebook_id}, on {self.last_refresh_time}"
 
+class DashboardType(enum.Enum):
+    STUDENT = "student_db"
+    TEACHER = "teacher_db"
+
 # Dashboard interaction collection
 class DashboardEvent(db.Model):
 
     __tablename__ = 'DashboardEvent'
 
     id = db.Column(db.Integer, primary_key=True)
-    dashboard_user_id = db.Column(db.String(100), nullable=False)
     click_type = db.Column(db.Enum(ClickType), nullable=False)  # ON or OFF (if it does not make sense, select ON)
     signal_origin = db.Column(db.String(90), nullable=False)
     timestamp = db.Column(db.DateTime, nullable=False)
+    dashboard_type = db.Column(db.Enum(DashboardType), nullable=False)
+    dashboard_user_id = db.Column(db.String(100), nullable=True) # null if dashboard_type == STUDENT
     notebook_id = db.Column(db.String(60), nullable=True) # null if not associated with a notebook_id
 
     def __str__(self):
-        return f"User ({self.dashboard_user_id}): '{self.signal_origin}', {self.click_type}, nb_id: {self.notebook_id}"
+        return f"User of type {self.type} ({self.dashboard_user_id}): '{self.signal_origin}', {self.click_type}, nb_id: {self.notebook_id}"
 
 
 UserGroupAssociation = db.Table('UserGroupAssociation',

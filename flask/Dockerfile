@@ -8,6 +8,7 @@ WORKDIR /app
 
 COPY . .
 RUN pip install -r requirements.txt
+RUN pip install --only-binary=:all: -r requirements-binary.txt
 
 EXPOSE 5000
 
