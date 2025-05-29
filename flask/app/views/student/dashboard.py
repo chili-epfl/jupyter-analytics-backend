@@ -19,6 +19,16 @@ def validate_user_id(user_id):
         return None, jsonify({"error": "User ID is required"}), 400
     return hash_user_id_with_salt(user_id), None
 
+### Check a notebook is registered ###
+@dashboard_bp.route('/<notebook_id>/check', methods=['GET'])
+def checkNotebook(notebook_id):
+    notebook = Notebook.query.filter_by(notebook_id=notebook_id).first()
+    if not notebook:
+        # notebook not found
+        return jsonify({'status': 'not_found'}), 404
+
+    return jsonify({ 'status': 'success' }), 200
+
 ### Get your error types distribution ###
 @dashboard_bp.route('/<user_id>/errors/distrib', methods=['GET'])
 def getUserErrorsDistribution(user_id):
