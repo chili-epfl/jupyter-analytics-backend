@@ -11,7 +11,7 @@ def add_dashboard_interaction():
 
     user_id = request.args.get('user_id')
     if not user_id:
-        return None, jsonify({"error": "User ID is required"}), 400
+        return jsonify({"error": "User ID is required"}), 400
     user_id = hash_user_id_with_salt(user_id), 
 
     data = request.get_json()

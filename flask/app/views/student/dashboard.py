@@ -80,8 +80,8 @@ def getUserErrorsDistributionTimeline(user_id):
             )
         
         result = {
-            date.isoformat(): dict(Counter(error_types))
-            for error_types, date in query if error_types
+            date.isoformat(): dict(Counter(filter(lambda e: e is not None, error_types)))
+            for error_types, date in query
         }
         return jsonify(result)
     
