@@ -13,7 +13,11 @@ groups_bp = Blueprint("groups", __name__)
 
 @groups_bp.route("/add", methods=["POST"])
 def add_group():
-
+    """Create a new user group for a notebook.
+    
+    This endpoint was originally designed for sending telemetry data.
+    Creates a group with the specified name and associates the provided users with it.
+    """
     data = request.get_json()
     try:
         group = UserGroups(
@@ -23,12 +27,7 @@ def add_group():
 
         users = []
         non_hashed_user_ids = data.get("user_ids", [])
-        print(f"=== DEBUG add_group ===", flush=True)
-        print(f"Group name: {data.get('group_name', None)}", flush=True)
-        print(f"Notebook ID: {data.get('notebook_id', None)}", flush=True)
-        print(f"Raw user IDs received: {non_hashed_user_ids}", flush=True)
         user_ids = [hash_user_id_with_salt(elem) for elem in non_hashed_user_ids]
-        print(f"Hashed user IDs: {user_ids}", flush=True)
         for user_id in user_ids:
             # check if the user already exists
             user = Users.query.filter_by(user_id=user_id).first()
@@ -51,6 +50,7 @@ def add_group():
 
 @groups_bp.route("/delete", methods=["DELETE"])
 def delete_group():
+    """Delete a user group by group name and notebook ID."""
     data = request.get_json()
     try:
         group_pk = f"{data.get('group_name', '')}-{data.get('notebook_id', '')}"
@@ -69,6 +69,11 @@ def delete_group():
 
 @groups_bp.route("/update", methods=["PUT"])
 def update_group():
+    """Update the users in an existing group.
+    
+    Accepts a complete list of user IDs that should be in the group.
+    Adds new users and removes users no longer in the list.
+    """
     data = request.get_json()
     try:
         group_pk = f"{data.get('group_name', '')}-{data.get('notebook_id', '')}"
@@ -76,14 +81,9 @@ def update_group():
         if group:
             # assume user_ids is the complete set of users that should now be in the group
             current_user_ids = set(user.user_id for user in group.group_users)
-            print(f"=== DEBUG update_group ===", flush=True)
-            print(f"Group PK: {group_pk}", flush=True)
-            print(f"Raw user IDs received: {data.get('user_ids', [])}", flush=True)
             new_user_ids = set(
                 [hash_user_id_with_salt(elem) for elem in data.get("user_ids", [])]
             )
-            print(f"Hashed new user IDs: {new_user_ids}", flush=True)
-            print(f"Current user IDs in group: {current_user_ids}", flush=True)
             users_to_add = new_user_ids - current_user_ids
             users_to_remove = current_user_ids - new_user_ids
 
@@ -111,9 +111,9 @@ def update_group():
         return f"An error occurred: {str(e)}", 500
 
 
-# Route: /getusers: Gets the user IDs for the selected groups in a notebook
 @groups_bp.route("/getusers", methods=["GET"])
 def get_users():
+    """Get the user IDs for the selected groups in a notebook."""
     notebook_id = request.args.get("notebookId", None)
     # group_name = request.args.get('groupName', None)
 
@@ -138,7 +138,7 @@ def get_users():
 
 @groups_bp.route("testgroup", methods=["GET"])
 def test_group():
-
+    """Test endpoint for validating group selection parsing."""
     selected_groups = request.args.get("selectedGroups", None)
 
     if selected_groups:
@@ -149,9 +149,9 @@ def test_group():
         return jsonify("No groups")
 
 
-# Route: /users/<user_id>/teammates: Gets the teammates of a user in the same groups for a given notebook
 @groups_bp.route("/users/<user_id>/teammates", methods=["GET"])
 def get_teammates(user_id):
+    """Get the teammates of a user in the same groups for a given notebook."""
     notebook_id = request.args.get("notebookId", None)
     if not notebook_id:
         return jsonify({"error": "Missing notebookId"}), 400
@@ -172,13 +172,6 @@ def get_teammates(user_id):
     )
     group_pks = [r[0] for r in group_pk_rows]
 
-    # Debug Print Statement
-    print(f"=== DEBUG get_teammates ===", flush=True)
-    print(f"User ID (raw): {user_id}", flush=True)
-    print(f"User ID (hashed): {hashed_user_id}", flush=True)
-    print(f"Notebook ID: {notebook_id}", flush=True)
-    print(f"User belongs to groups: {group_pks}", flush=True)
-
     if not group_pks:
         return jsonify([]), 200
 
@@ -198,7 +191,6 @@ def get_teammates(user_id):
     return jsonify(teammates), 200
 
 
-# Route: /users/<user_id>/teammates/connected: Gets the connected teammates of a user in the same groups for a given notebook
 @groups_bp.route("/users/<user_id>/teammates/connected", methods=["GET"])
 def get_connected_teammates(user_id):
     """Get connected teammates for a user (teammates who are currently connected via websocket)."""
@@ -222,15 +214,7 @@ def get_connected_teammates(user_id):
     )
     group_pks = [r[0] for r in group_pk_rows]
 
-    # Debug: Print group info
-    print(f"=== DEBUG get_connected_teammates ===", flush=True)
-    print(f"User ID (raw): {user_id}", flush=True)
-    print(f"User ID (hashed): {hashed_user_id}", flush=True)
-    print(f"Notebook ID: {notebook_id}", flush=True)
-    print(f"User belongs to groups: {group_pks}", flush=True)
-
     if not group_pks:
-        print(f"No groups found - returning empty list", flush=True)
         return jsonify([]), 200
 
     # Find all users in those groups excluding the given user (these are HASHED)
@@ -244,11 +228,9 @@ def get_connected_teammates(user_id):
         .all()
     )
     all_teammates_hashed = {r[0] for r in teammate_rows}
-    print(f"All teammates (hashed): {all_teammates_hashed}", flush=True)
 
     # Return early if no teammates
     if not all_teammates_hashed:
-        print(f"No teammates in groups - returning empty list", flush=True)
         return jsonify([]), 200
 
     # Get currently connected students from Redis cache
@@ -256,22 +238,16 @@ def get_connected_teammates(user_id):
     connected_student_ids_raw = redis_client.smembers(
         f"connected_students:{notebook_id}"
     )
-    print(
-        f"Connected students (raw from Redis): {connected_student_ids_raw}", flush=True
-    )
 
     # Decode bytes to strings - NO hashing needed since they're already hashed
     connected_set_hashed = {uid.decode("utf-8") for uid in connected_student_ids_raw}
-    print(f"Connected students (decoded): {connected_set_hashed}", flush=True)
 
     # Filter teammates to only those who are currently connected
     connected_teammates = list(all_teammates_hashed & connected_set_hashed)
-    print(f"Connected teammates (intersection): {connected_teammates}", flush=True)
 
     return jsonify(connected_teammates), 200
 
 
-# Route: /users/<user_id>/groups/names: Gets the group names for a specific user
 @groups_bp.route("/users/<user_id>/groups/names", methods=["GET"])
 def get_user_group_names(user_id):
     """Get group names for a specific user."""
@@ -304,7 +280,6 @@ def get_user_group_names(user_id):
     return jsonify(groups), 200
 
 
-# Route: /notebook/<notebook_id>/getgroups: Gets all groups for a specific notebook
 @groups_bp.route("/notebook/<notebook_id>/getgroups", methods=["GET"])
 def get_groups_for_notebook(notebook_id):
     """Get all groups for a specific notebook."""
@@ -331,7 +306,6 @@ def get_groups_for_notebook(notebook_id):
     return jsonify(result), 200
 
 
-# Route /location/update: Updates the current cell location for a user
 @groups_bp.route("/location/update", methods=["POST"])
 def update_user_location():
     """Update the current cell location for a user."""
@@ -374,7 +348,6 @@ def update_user_location():
         return jsonify({"error": str(e)}), 500
 
 
-# Route /location/teammates: Gets the current locations of all connected teammates
 @groups_bp.route("/location/teammates", methods=["GET"])
 def get_teammates_locations():
     """Get current locations of all connected teammates."""
@@ -400,7 +373,6 @@ def get_teammates_locations():
     group_pks = [r[0] for r in group_pk_rows]
 
     if not group_pks:
-        print(f"User {user_id} has no groups in notebook {notebook_id}", flush=True)
         return jsonify([]), 200
 
     # Find all teammates (users in same groups)
@@ -417,7 +389,6 @@ def get_teammates_locations():
 
     # Return early if no teammates
     if not teammate_ids:
-        print(f"User {user_id} has no teammates in their groups", flush=True)
         return jsonify([]), 200
 
     # Get connected teammates from Redis
@@ -426,27 +397,12 @@ def get_teammates_locations():
     )
     connected_set = {uid.decode("utf-8") for uid in connected_student_ids_raw}
 
-    print("=== DEBUG get_teammates_locations ===", flush=True)
-    print(f"User ID (hashed): {hashed_user_id}", flush=True)
-    print(f"Teammate IDs from groups (hashed): {teammate_ids}", flush=True)
-    print(f"Connected students from Redis (hashed): {connected_set}", flush=True)
-
     # Filter to only connected teammates
     connected_teammates = [tid for tid in teammate_ids if tid in connected_set]
-    print(f"Connected teammates (intersection): {connected_teammates}", flush=True)
 
     # Return early if no connected teammates
     if not connected_teammates:
-        print(f"No teammates are currently connected", flush=True)
         return jsonify([]), 200
-
-    # Debug: Show ALL user IDs in TeammateLocation for this notebook
-    all_locations = TeammateLocation.query.filter(
-        TeammateLocation.notebook_id == notebook_id
-    ).all()
-    print("ALL user IDs in TeammateLocation table for this notebook:", flush=True)
-    for loc in all_locations:
-        print(f"  - {loc.user_id} (cell: {loc.cell_id})", flush=True)
 
     # Get their locations (only recent - within last 5 minutes)
     cutoff_time = datetime.utcnow() - timedelta(minutes=5)
@@ -455,7 +411,6 @@ def get_teammates_locations():
         TeammateLocation.notebook_id == notebook_id,
         TeammateLocation.updated_at >= cutoff_time,
     ).all()
-    print(f"Locations found: {len(locations)}", flush=True)
 
     result = [
         {
@@ -470,7 +425,6 @@ def get_teammates_locations():
     return jsonify(result), 200
 
 
-# Route /users/<user_id>/role: Gets the role of a user based on their connection type
 @groups_bp.route("/users/<user_id>/role", methods=["GET"])
 def get_user_role(user_id):
     """Get the role of a user based on their connection type."""
@@ -490,7 +444,6 @@ def get_user_role(user_id):
         return jsonify({"role": "student"}), 200
 
 
-# Route /location/clear: Clears the location for a user when they disconnect
 @groups_bp.route("/location/clear", methods=["DELETE"])
 def clear_user_location():
     """Clear location when user disconnects."""
