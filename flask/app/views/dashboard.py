@@ -14,8 +14,6 @@ from app.models.models import (
     PendingUpdateAction,
 )
 from app.utils.utils import get_fetch_real_time, get_time_boundaries
-from app.utils.storage import download_file_from_volume
-from app.utils.constants import Selectors
 from sqlalchemy import func, and_, select, or_
 from sqlalchemy.orm import with_polymorphic
 from flask_jwt_extended import jwt_required, current_user
