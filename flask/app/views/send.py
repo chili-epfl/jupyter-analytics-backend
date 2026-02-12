@@ -202,33 +202,28 @@ def postAlterEvent():
 
 @send_bp.route("/pending_update_interaction", methods=["POST"])
 def postPendingUpdateInteraction():
+    """Record a user's interaction with a pending cell update.
+    
+    This endpoint logs telemetry data for how users respond to pending updates
+    (e.g., UPDATE_NOW, UPDATE_LATER, OVERRIDE). Tracks user actions along with
+    the sender information (teacher or teammate) for analytics purposes.
+    """
     data = request.get_json()
-    print(f"=== Received pending_update_interaction POST ===", flush=True)
-    print(f"Full data received: {data}", flush=True)
 
     hashed_user_id = hash_user_id_with_salt(data["user_id"])
-    print(f"User ID (raw): {data['user_id']}", flush=True)
-    print(f"Hashed user ID: {hashed_user_id}", flush=True)
 
     # Hash the sender if provided
     sender_hashed = None
     sender_type = data.get("sender_type")  # Get sender_type from frontend
     if data.get("sender"):
         sender_hashed = hash_user_id_with_salt(data["sender"])
-        print(f"Sender ID (raw): {data['sender']}", flush=True)
-        print(f"Hashed sender ID: {sender_hashed}", flush=True)
-        print(f"Sender type: {sender_type}", flush=True)
 
     cell_id = data.get("cell_id")
     update_id = data.get("update_id")
     action = data.get("action")
-    print(f"Cell ID from request: {cell_id}", flush=True)
-    print(f"Update ID from request: {update_id}", flush=True)
-    print(f"Action from request: {action}", flush=True)
 
     try:
         action_enum = PendingUpdateAction[action]
-        print(f"Action enum: {action_enum}", flush=True)
 
         new_interaction = PendingUpdateInteraction(
             notebook_id=data["notebook_id"],
@@ -244,13 +239,8 @@ def postPendingUpdateInteraction():
         )
         db.session.add(new_interaction)
         db.session.commit()
-        print(
-            f"Successfully saved interaction with cell_id: {cell_id}, update_id: {update_id}",
-            flush=True,
-        )
         return jsonify("PendingUpdateInteraction OK")
 
     except Exception as e:
         db.session.rollback()
-        print(f"Error saving pending update interaction: {str(e)}", flush=True)
         return f"An error occurred: {str(e)}", 500
