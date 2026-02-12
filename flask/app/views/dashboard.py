@@ -750,11 +750,4 @@ def getPendingUpdatesStats(notebook_id):
     # Sort by timestamp descending
     sorted_stats = sorted(stats.values(), key=lambda x: x["timestamp"], reverse=True)
 
-    # Debug logging
-    print(f"Returning {len(sorted_stats)} cell stats (teacher updates only):")
-    for stat in sorted_stats[:3]:  # Print first 3 for debugging
-        print(
-            f"  Cell {stat['cell_id']}: update_id={stat.get('update_id')}"
-        )
-
     return jsonify(sorted_stats)
