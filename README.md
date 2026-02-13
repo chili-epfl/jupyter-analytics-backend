@@ -79,7 +79,7 @@ The difference between the 3 modes:
 
 1. Debug: Flask starts with the development server, so you don't need to restart the Flask containers when making a change. Simply saving the file will update the running container. Also the 1st Flask container is listening on port 5000, making it exposed to external connectivity, which can be useful when debugging to bypass the load balancer.
 
-    (Tips: Mac users may find port 5000 already in use: go Apple Menu > System settings > general > AirDrop & Handoff > you will see Airplay Receiver on. Slide it off, which will turn off Airplay Receiver and free the port.)
+   (Tips: Mac users may find port 5000 already in use: go Apple Menu > System settings > general > AirDrop & Handoff > you will see Airplay Receiver on. Slide it off, which will turn off Airplay Receiver and free the port.)
 
 2. Dev: Flask is started with gunicorn, as in production and on AWS, making it scalable. It is also started with logging enabled.
 
