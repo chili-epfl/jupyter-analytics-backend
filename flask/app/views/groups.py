@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from app import db, redis_client
 from app.models.models import UserGroups, Users, UserGroupAssociation, TeammateLocation
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from app.utils.utils import hash_user_id_with_salt
 from app.views.dashboard import getGroupsUserIdsSubquery
 import json
@@ -329,14 +329,14 @@ def update_user_location():
         if existing:
             existing.cell_id = cell_id
             existing.cell_index = cell_index
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = datetime.now(timezone.utc)
         else:
             new_location = TeammateLocation(
                 user_id=hashed_user_id,
                 notebook_id=notebook_id,
                 cell_id=cell_id,
                 cell_index=cell_index,
-                updated_at=datetime.utcnow(),
+                updated_at=datetime.now(timezone.utc),
             )
             db.session.add(new_location)
 
@@ -405,7 +405,7 @@ def get_teammates_locations():
         return jsonify([]), 200
 
     # Get their locations (only recent - within last 5 minutes)
-    cutoff_time = datetime.utcnow() - timedelta(minutes=5)
+    cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=5)
     locations = TeammateLocation.query.filter(
         TeammateLocation.user_id.in_(connected_teammates),
         TeammateLocation.notebook_id == notebook_id,
