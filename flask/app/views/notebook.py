@@ -3,6 +3,7 @@ import json
 import datetime
 from app import db
 from app.models.models import Notebook
+from app.models.auth import AuthNotebooks
 from io import BytesIO
 import zipfile
 import nbformat
@@ -65,6 +66,15 @@ def postS3Notebook():
             time=datetime.datetime.now()
         )
         db.session.add(new_notebook)
+
+        # auto-whitelist the uploader for this notebook
+        auth_notebook = AuthNotebooks.query.filter_by(notebook_id=notebook_id).first()
+        if not auth_notebook:
+            auth_notebook = AuthNotebooks(notebook_id=notebook_id)
+            db.session.add(auth_notebook)
+        if current_user not in auth_notebook.authorized_users:
+            auth_notebook.authorized_users.append(current_user)
+
         db.session.commit()
 
         # upload notebook file only if database insertion was successful
