@@ -15,7 +15,6 @@ groups_bp = Blueprint("groups", __name__)
 def add_group():
     """Create a new user group for a notebook.
     
-    This endpoint was originally designed for sending telemetry data.
     Creates a group with the specified name and associates the provided users with it.
     """
     data = request.get_json()
