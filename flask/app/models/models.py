@@ -12,7 +12,12 @@ class Event(db.Model):
     notebook_id = db.Column(db.String(100), nullable=False)
     user_id = db.Column(db.String(100), nullable=False)
     event_type = db.Column(db.String(32), nullable=False)
+    
     __mapper_args__ = {"polymorphic_identity": "Event", "polymorphic_on": event_type}
+    
+    __table_args__ = (
+        db.Index("idx_event_notebook_user", "notebook_id", "user_id"),
+    )
 
     def __str__(self):
         return f"Event (id: {self.id}), type : {self.event_type}"
