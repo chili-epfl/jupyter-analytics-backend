@@ -80,19 +80,19 @@ Mappings:
   InstanceTypeMemoryReservation:
     # Defining soft memory limit for the ECS Task Definition. Leaving >100MiB for the Docker process and for some margin (between 3-18% of total available MEM)
     t4g.nano:
-      MemoryReservation: 400 # total 512 MiB, 419 MiB actually available to ECS container
+      MemoryReservation: 256 # total 512 MiB, 419 MiB actually available to ECS container
     t4g.micro:
-      MemoryReservation: 900 # total 1024 MiB, 917 MiB actually available to ECS container
+      MemoryReservation: 512 # total 1024 MiB, 917 MiB actually available to ECS container
     t4g.small:
-      MemoryReservation: 1800 # total 2048 MiB, 1847 MiB actually available to ECS container
+      MemoryReservation: 1024 # total 2048 MiB, 1847 MiB actually available to ECS container
     t4g.medium:
-      MemoryReservation: 3750 # total 4096 MiB, 3836 MiB actually available to ECS container
+      MemoryReservation: 2048 # total 4096 MiB, 3836 MiB actually available to ECS container
     t4g.large:
-      MemoryReservation: 7500 # total 8192 MiB, 7814 MiB actually available to ECS container
+      MemoryReservation: 4096 # total 8192 MiB, 7814 MiB actually available to ECS container
     t4g.xlarge:
-      MemoryReservation: 15200 # total 16384 MiB, 15772 MiB actually available to ECS container
+      MemoryReservation: 8192 # total 16384 MiB, 15772 MiB actually available to ECS container
     t4g.2xlarge:
-      MemoryReservation: 31000 # total 32768 MiB, 31685 MiB actually available to ECS container
+      MemoryReservation: 16384 # total 32768 MiB, 31685 MiB actually available to ECS container
 
 Conditions:
   TlsEnabled: !Not [!Equals [!Ref HostedZoneId, ""]]
