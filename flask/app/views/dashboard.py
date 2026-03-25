@@ -19,7 +19,24 @@ from sqlalchemy.orm import with_polymorphic
 from flask_jwt_extended import jwt_required, current_user
 import csv
 from io import StringIO
-import datetime
+from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from collections import defaultdict
+import statistics
+
+
+@dataclass
+class ProgressSnapshot:
+    timestamp: datetime
+    mean: float
+    median: float
+    q1: float
+    q3: float
+
+
+# keyed by (notebook_id, time_start_iso)
+_progress_cache: dict[tuple, list[ProgressSnapshot]] = {}
+
 
 dashboard_bp = Blueprint("dashboard", __name__)
 
@@ -63,6 +80,67 @@ def getGroupsUserIdsSubquery(notebook_id, groups):
         .filter(UserGroupAssociation.c.group_pk.in_(group_pks))
         .subquery()
     )
+
+
+def compute_snapshots(
+    notebook_id: str,
+    cell_order: list,
+    from_time: datetime,
+    to_time: datetime,
+    selected_groups,
+) -> list[ProgressSnapshot]:
+    cell_position = {cid: i + 1 for i, cid in enumerate(cell_order)}
+
+    query = db.session.query(
+        CellExecution.user_id,
+        CellExecution.orig_cell_id,
+        CellExecution.t_start,
+    ).filter(
+        CellExecution.notebook_id == notebook_id,
+        CellExecution.t_start >= from_time,
+        CellExecution.t_start <= to_time,
+    ).order_by(CellExecution.user_id, CellExecution.t_start)
+
+    if selected_groups:
+        query = query.filter(
+            CellExecution.user_id.in_(
+                select(getGroupsUserIdsSubquery(notebook_id, selected_groups))
+            )
+        )
+
+    rows = query.all()
+
+    user_events: dict[str, list[tuple]] = defaultdict(list)
+    for user_id, orig_cell_id, t_start in rows:
+        user_events[user_id].append((t_start, orig_cell_id))
+
+    snapshots = []
+    t = from_time
+    while t <= to_time:
+        positions = []
+        for uid, evts in user_events.items():
+            past = [cid for ts, cid in evts if ts <= t]
+            if past:
+                pos = cell_position.get(past[-1])
+                if pos is not None:
+                    positions.append(pos)
+
+        if positions:
+            if len(positions) == 1:
+                v = float(positions[0])
+                snapshots.append(ProgressSnapshot(t, v, v, v, v))
+            else:
+                qs = statistics.quantiles(positions, n=4)
+                snapshots.append(ProgressSnapshot(
+                    timestamp=t,
+                    mean=statistics.mean(positions),
+                    median=statistics.median(positions),
+                    q1=qs[0],
+                    q3=qs[2],
+                ))
+        t += timedelta(minutes=1)
+
+    return snapshots
 
 
 ### Routes ###
@@ -303,6 +381,42 @@ def listNotebookCellDurationTime(notebook_id):
             "total_user_count": total_user_count,
         }
     )
+
+@dashboard_bp.route("/<notebook_id>/cell_execution_progress", methods=["POST"])
+def getUserExecutionProgress(notebook_id):
+    data = request.get_json()
+    time_start = datetime.fromisoformat(data["time_start"]).replace(tzinfo=None)
+    time_end   = datetime.fromisoformat(data["time_end"]).replace(tzinfo=None)
+    cell_order = data.get("cell_order", [])
+    selected_groups = data.get("selected_groups", None)
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    effective_end = min(time_end, now)
+
+    cache_key = (notebook_id, data["time_start"])
+    cached = _progress_cache.get(cache_key, [])
+
+    if cached:
+        new_from = cached[-1].timestamp + timedelta(minutes=1)
+    else:
+        new_from = time_start
+
+    if new_from <= effective_end:
+        new_snapshots = compute_snapshots(
+            notebook_id, cell_order,
+            new_from, effective_end,
+            selected_groups,
+        )
+        cached = cached + new_snapshots
+        _progress_cache[cache_key] = cached
+
+    return jsonify({
+        "timestamps": [s.timestamp.isoformat() for s in cached],
+        "mean":       [s.mean   for s in cached],
+        "median":     [s.median for s in cached],
+        "q1":         [s.q1     for s in cached],
+        "q3":         [s.q3     for s in cached],
+    })
 
 
 ### Cell dashboard ###
