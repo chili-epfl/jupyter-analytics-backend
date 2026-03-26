@@ -610,8 +610,8 @@ def downloadNotebookDataCSV(notebook_id):
         t2_str = request.args.get("t2")
 
         # convert string to datetime object
-        t1 = datetime.datetime.strptime(t1_str, "%Y-%m-%dT%H:%M:%S.%f%z")
-        t2 = datetime.datetime.strptime(t2_str, "%Y-%m-%dT%H:%M:%S.%f%z")
+        t1 = datetime.strptime(t1_str, "%Y-%m-%dT%H:%M:%S.%f%z")
+        t2 = datetime.strptime(t2_str, "%Y-%m-%dT%H:%M:%S.%f%z")
 
         polymorphic_join = with_polymorphic(
             Event, [CellExecution, CellClickEvent, NotebookClickEvent, CellAlteration]
