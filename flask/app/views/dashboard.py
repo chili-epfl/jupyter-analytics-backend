@@ -32,6 +32,7 @@ class ProgressSnapshot:
     median: float
     q1: float
     q3: float
+    n_users: int
 
 
 # keyed by (notebook_id, time_start_iso)
@@ -128,7 +129,7 @@ def compute_snapshots(
         if positions:
             if len(positions) == 1:
                 v = float(positions[0])
-                snapshots.append(ProgressSnapshot(t, v, v, v, v))
+                snapshots.append(ProgressSnapshot(t, v, v, v, v, 1))
             else:
                 qs = statistics.quantiles(positions, n=4)
                 snapshots.append(ProgressSnapshot(
@@ -137,6 +138,7 @@ def compute_snapshots(
                     median=statistics.median(positions),
                     q1=qs[0],
                     q3=qs[2],
+                    n_users=len(positions),
                 ))
         t += timedelta(minutes=1)
 
@@ -412,10 +414,11 @@ def getUserExecutionProgress(notebook_id):
 
     return jsonify({
         "timestamps": [s.timestamp.isoformat() for s in cached],
-        "mean":       [s.mean   for s in cached],
-        "median":     [s.median for s in cached],
-        "q1":         [s.q1     for s in cached],
-        "q3":         [s.q3     for s in cached],
+        "mean":       [s.mean    for s in cached],
+        "median":     [s.median  for s in cached],
+        "q1":         [s.q1      for s in cached],
+        "q3":         [s.q3      for s in cached],
+        "n_users":    [s.n_users for s in cached],
     })
 
 
